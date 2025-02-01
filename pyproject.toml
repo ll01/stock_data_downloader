@@ -1,0 +1,27 @@
+[project]
+name = "stock_data_downloader"
+version = "0.1"
+description = "A sample Python project"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "yfinance[nospam]",
+    "pandas",
+    "requests_cache",
+    "requests_ratelimiter",
+    "pyrate_limiter",
+    "ruff",
+    "tqdm",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+]
+
+[project.scripts]
+stock_data_downloader = "stock_data_downloader.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

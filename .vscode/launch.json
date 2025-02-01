@@ -1,0 +1,29 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "stock_data_downloader/main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--ticker-file", 
+                "${workspaceFolder}/tickers.txt",
+                "--start-date", 
+                "2020-01-01",
+                "--end-date", 
+                "2023-10-01",
+                "--csv-file", 
+                "${workspaceFolder}/ohlc_data.csv",
+                "--zip-file", 
+                "${workspaceFolder}/ohlc_data.zip",
+                "--data-provider", 
+                "yahoo"
+            ]
+        }
+    ]
+}

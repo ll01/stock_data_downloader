@@ -1,7 +1,8 @@
 import logging
+from pathlib import Path
 import time
 from datetime import datetime
-from typing import List
+from typing import List, Union
 
 import pandas as pd
 import requests
@@ -14,15 +15,17 @@ logger = logging.getLogger(__name__)
 class AlphaVantageDataProvider(DataProvider):
     BASE_URL = "https://www.alphavantage.co/query"
     
-    def __init__(self, api_key: str):
+    def __init__(self, secret_file_path: Union[str, Path], requests_per_minute: int):
         """
         Initialize the AlphaVantageDataProvider with an API key.
         """
-        self.api_key = api_key
+        with open(secret_file_path, "r") as f:
+            self.api_key = f.read().strip()
+        self.requests_per_minute = requests_per_minute
 
     def download_ticker_data(
-        self, tickers: List[str], start_date: datetime, end_date: datetime,
-        requests_per_minute: int
+        self, tickers: List[str], start_date: str, end_date: str,
+        
     ) -> pd.DataFrame:
         """
         Downloads historical stock data from Alpha Vantage.
@@ -37,7 +40,7 @@ class AlphaVantageDataProvider(DataProvider):
             pd.DataFrame: Combined stock data for all tickers.
         """
         all_data = []
-        interval = 60 / requests_per_minute  # Ensures we respect the rate limit
+        interval = 60 / self.requests_per_minute  # Ensures we respect the rate limit
 
         for ticker in tickers:
             print(f"Downloading {ticker} data from {start_date} to {end_date}...")

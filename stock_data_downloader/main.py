@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
@@ -12,11 +13,13 @@ from stock_data_downloader.data_provider.DataProviderFactory import DataProvider
 from stock_data_downloader.data_provider.OutlierIdentifier import OutlierIdentifier
 
 
-def setup_logging():
+def setup_logging(log_level: Optional[str] = None):
     """
     Set up logging configuration for the application.
     """
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    if log_level is None:
+        log_level = os.getenv("LOG_LEVEL", "INFO")
+    log_level = log_level.upper()
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -50,13 +53,13 @@ def parse_arguments() -> argparse.Namespace:
         "--start-date",
         type=str,
         default="2020-01-01",
-        help="Start date for the data (default: 2020-01-01)",
+        help="Start date for the data in YYYY-MM-DD format (default: 2020-01-01)",
     )
     parser.add_argument(
         "--end-date",
         type=str,
         default=datetime.today().strftime("%Y-%m-%d"),
-        help="End date for the data (default: today)",
+        help="End date for the data in YYYY-MM-DD format (default: today)",
     )
     parser.add_argument(
         "--csv-file",
@@ -77,12 +80,36 @@ def parse_arguments() -> argparse.Namespace:
         choices=["yahoo", "alphavantage"],  # Restrict to supported providers
         help="Data provider to use (default: yahoo)",
     )
+    parser.add_argument(
+        "--secret-file",
+        type=str,
+        default="secrets.json",
+        help="Path to the file containing API keys or secrets (default: secrets.json)",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=10,
+        help="Number of tickers to process in each chunk (default: 10)",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level (default: INFO)",
+    )
+    parser.add_argument(
+        "--keep-csv",
+        action="store_true",
+        help="Keep intermediate CSV files after zipping (default: False)",
+    )
     return parser.parse_args()
 
 
 def download_stock_data(args: argparse.Namespace, data_provider: DataProvider):
     logger = logging.getLogger(__name__)
-    chunk_size = 10
+    chunk_size = args.chunk_size
     tickers = load_tickers_from_file(args.ticker_file)
     chunks = [tickers[i : i + chunk_size] for i in range(0, len(tickers), chunk_size)]
     outlier_identifier = OutlierIdentifier()
@@ -113,22 +140,26 @@ def download_stock_data(args: argparse.Namespace, data_provider: DataProvider):
                 logger.error(f"Error processing chunk {chunk}: {e.with_traceback}")
                 continue
     zip_csv_file(csv_files, args.zip_file)
-    logger.info("Adding to zip file")
-    cleanup_csv_files(csv_files)
-    logger.info(f"Removing {len(csv_files)} CSV files")
+    logger.info(f"CSV files zipped to {args.zip_file}")
+    if not args.keep_csv:
+        cleanup_csv_files(csv_files)
+        logger.info(f"Removed {len(csv_files)} intermediate CSV files")
+    else:
+        logger.info("Intermediate CSV files retained as --keep-csv was specified.")
 
 
 def main():
-    setup_logging()
+    args = parse_arguments()
+    setup_logging(args.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting the stock data downloader.")
 
     # Parse command-line arguments
-    args = parse_arguments()
+
     logger.info(f"Arguments parsed: {args}")
 
     data_provider_factory = DataProviderFactory()
-    data_provider = data_provider_factory.create(args.data_provider)
+    data_provider = data_provider_factory.create(args.data_provider, args.secret_file)
 
     # Download and process stock data
     try:

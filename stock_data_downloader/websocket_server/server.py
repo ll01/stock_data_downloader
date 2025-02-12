@@ -25,7 +25,7 @@ def find_free_port():
 
 class WebSocketServer:
     connections: Set[ClientConnection] = set()
-    
+
     def __init__(
         self,
         uri: str,
@@ -63,7 +63,13 @@ class WebSocketServer:
 
             for ticker, prices in self.simulated_prices.items():
                 if i < len(prices):
-                    batch_data.append({"timestamp": current_time.isoformat(), "ticker": ticker, **prices[i]})
+                    batch_data.append(
+                        {
+                            "timestamp": current_time.isoformat(),
+                            "ticker": ticker,
+                            **prices[i],
+                        }
+                    )
 
             if batch_data:
                 await websocket.send(json.dumps(batch_data))
@@ -90,14 +96,17 @@ class WebSocketServer:
             yield new_prices
             await asyncio.sleep(1 * 60)
 
-async def run(self, stats, start_prices, interval):
-    try:
-        if self.realtime:
-            async for new_prices in self.generate_realtime_prices(stats, start_prices, interval):
-                json_data = json.dumps(new_prices)
-                broadcast(self.connections, json_data)
-    except Exception as e:
-        logger.error(f"Error in WebSocket server: {e}")
+    async def run(self, stats, start_prices, interval):
+        try:
+            if self.realtime:
+                async for new_prices in self.generate_realtime_prices(
+                    stats, start_prices, interval
+                ):
+                    json_data = json.dumps(new_prices)
+                    broadcast(self.connections, json_data)
+        except Exception as e:
+            logger.error(f"Error in WebSocket server: {e}")
+
 
 async def handle_websocket_output(
     simulated_prices: Dict[str, List[Dict[str, float]]],

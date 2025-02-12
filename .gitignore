@@ -181,3 +181,4 @@ pyrightconfig.json
 *.zip
 *.cache
 *.secret
+*.sqlite

@@ -13,6 +13,7 @@ dependencies = [
     "ruff",
     "tqdm",
     "scipy",
+    "websockets",
 ]
 
 [project.optional-dependencies]

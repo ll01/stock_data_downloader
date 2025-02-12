@@ -14,8 +14,6 @@ from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
 from stock_data_downloader.data_provider.DataProvider import DataProvider
 from stock_data_downloader.data_provider.OutlierIdentifier import OutlierIdentifier
 
-
-
 logger = logging.getLogger(__name__)
 
 

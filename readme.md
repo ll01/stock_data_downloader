@@ -125,3 +125,9 @@ Contributions are welcome! If you'd like to contribute, please follow these step
 2. Create a new branch for your feature or bugfix.
 3. Commit your changes and push to the branch.
 4. Submit a pull request.
+
+
+
+ruff check --fix
+
+pip install .

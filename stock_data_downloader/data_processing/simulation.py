@@ -41,7 +41,7 @@ def simulate_ohlc(
 
 def simulate_single_ticker(
     ticker: str,
-    ticker_stats: Dict[str, float],
+    ticker_stats: TickerStats,
     timesteps: int,
     start_price: float,
     interval: float,
@@ -55,8 +55,8 @@ def simulate_single_ticker(
     prices: List[Dict[str, float]] = []
     current_price = start_price
     for _ in range(timesteps):
-        mean, sd = ticker_stats["mean"], ticker_stats["sd"]
-        ohlc = simulate_ohlc(mean, sd, current_price, interval)
+      
+        ohlc = simulate_ohlc(ticker_stats.mean, ticker_stats.sd, current_price, interval)
         prices.append(ohlc)
         current_price = ohlc["close"]
     return ticker, prices
@@ -78,7 +78,7 @@ def simulate_prices(
         (ticker, ticker_stats, timesteps, start_prices[ticker], interval)
         for ticker, ticker_stats in stats.items()
     ]
-
+    print(args[0:10])
     with Pool() as pool:
         results = pool.starmap(simulate_single_ticker, args)
 

@@ -72,10 +72,17 @@ class WebSocketServer:
                     )
 
             if batch_data:
-                await websocket.send(json.dumps(batch_data))
+                try:
+                    await websocket.send(json.dumps(batch_data))
+                except websockets.exceptions.ConnectionClosedOK:
+                    logger.info("Client disconnected gracefully.")
+                    return  # Exit the loop if the client disconnects
+                except Exception as e:
+                    logger.error(f"Error sending data to WebSocket: {e}")
+                    return  # Exit the loop on other errors
 
             # Introduce a slight random delay between ticks (optional, to simulate staggered updates)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0, 0.3))
 
     async def generate_realtime_prices(
         self,

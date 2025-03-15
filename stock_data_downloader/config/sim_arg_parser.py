@@ -9,7 +9,7 @@ def parse_arguments() -> argparse.Namespace:
 
     # Input/Output options
     parser.add_argument(
-        "--parquet-file",
+        "--sim_data_file",
         type=str,
         default="data/sim_data.parquet",
         help="Path to the Parquet file containing ticker statistics (default: sim_data.parquet)",
@@ -67,5 +67,15 @@ def parse_arguments() -> argparse.Namespace:
         default=1.0,  # Default interval of 1 second (or whatever unit you're using)
         help="Time interval between timesteps (default: 1.0)",
     )
+    
+    parser.add_argument(
+        "--realtime",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Whether to simulate realtime prices (default: False)",
+    )
 
     return parser.parse_args()
+
+#example
+# python -m stock_data_downloader.sim --output-format websocket --sim_data_file C:\Users\enti2\programming\trading_bot\stock_data_downloader\stock_data_downloader\data\sim_data.parquet

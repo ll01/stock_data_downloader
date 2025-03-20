@@ -8,10 +8,12 @@ from typing import AsyncGenerator, Dict, List, Optional, Set
 
 import websockets
 from websockets.asyncio.client import ClientConnection
-from websockets import broadcast
 
 from stock_data_downloader.data_processing.TickerStats import TickerStats
-from stock_data_downloader.data_processing.simulation import simulate_ohlc
+from stock_data_downloader.data_processing.simulation import (
+    simulate_ohlc,
+    simulate_prices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +26,27 @@ def find_free_port():
 
 
 class WebSocketServer:
-    connections: Set[ClientConnection] = set()
-
     def __init__(
         self,
         uri: str,
-        simulated_prices: Dict[str, List[Dict[str, float]]],
+        simulated_prices: Optional[Dict[str, List[Dict[str, float]]]] = None,
         realtime: bool = False,
+        start_prices: Optional[Dict[str, float]] = None,
+        stats: Optional[Dict[str, TickerStats]] = None,
+        interval: float = 1.0,
+        generated_prices_count: int = 252 * 1,  # 1 year of daily data
     ):
         self.uri = uri
         self.simulated_prices = simulated_prices
         self.realtime = realtime
+        self.start_prices = start_prices or {}  # Store initial prices for resets
+        self.current_prices = self.start_prices.copy()  # Active prices
+        self.stats = stats  # Store stats for simulation
+        self.interval = interval  # Store interval for updates
+        self.generated_prices_count = generated_prices_count
+        self.connections: Set[ClientConnection] = set()
+        self.realtime_task = None  # Store task reference for cancellation
+        self.simulation_running = False
 
     async def add_connection(self, websocket: ClientConnection):
         self.connections.add(websocket)
@@ -46,92 +58,266 @@ class WebSocketServer:
 
     async def websocket_server(self, websocket):
         await self.add_connection(websocket)
+
         if not self.realtime:
+            # For simulation mode, immediately start sending price data to the new client
             await self.emit_price_ticks(websocket)
+        elif self.realtime and len(self.connections) == 1:
+            # For realtime mode, start the realtime task if this is the first connection
+            if self.realtime_task is None or self.realtime_task.done():
+                self.realtime_task = asyncio.create_task(self.run_realtime())
+
         try:
-            await websocket.wait_closed()
+            async for message in websocket:
+                data = json.loads(message)
+                if "action" in data:
+                    await self.handle_message(websocket, data)
+        except websockets.exceptions.ConnectionClosedOK:
+            logger.info("Client disconnected gracefully.")
+        except Exception as e:
+            logger.error(f"WebSocket error: {e}")
         finally:
             await self.remove_connection(websocket)
+            # If no more connections and in realtime mode, stop the task
+            if self.realtime and not self.connections and self.realtime_task:
+                self.realtime_task.cancel()
 
     async def emit_price_ticks(self, websocket):
-        max_length = max(len(prices) for prices in self.simulated_prices.values())
-        now = datetime.now()
+        """Send pre-generated simulation data to a single client."""
+        if self.simulation_running:
+            logger.info("Simulation already running for other clients, not restarting")
+            return
 
-        for i in range(max_length):
-            batch_data = []
-            current_time = now + timedelta(seconds=i)
+        self.simulation_running = True
 
-            for ticker, prices in self.simulated_prices.items():
-                if i < len(prices):
-                    batch_data.append(
-                        {
-                            "timestamp": current_time.isoformat(),
-                            "ticker": ticker,
-                            **prices[i],
-                        }
-                    )
-
-            if batch_data:
-                try:
-                    await websocket.send(json.dumps(batch_data))
-                except websockets.exceptions.ConnectionClosedOK:
-                    logger.info("Client disconnected gracefully.")
-                    return  # Exit the loop if the client disconnects
-                except Exception as e:
-                    logger.error(f"Error sending data to WebSocket: {e}")
-                    return  # Exit the loop on other errors
-
-            # Introduce a slight random delay between ticks (optional, to simulate staggered updates)
-            await asyncio.sleep(random.uniform(0, 0.3))
-
-    async def generate_realtime_prices(
-        self,
-        stats: Dict[str, TickerStats],
-        start_prices: Dict[str, float],
-        interval: float = 1.0,
-    ) -> AsyncGenerator[Dict[str, Dict[str, float]], None]:
-        """Generates realtime prices indefinitely."""
-        current_prices = start_prices.copy()
-        while True:
-            new_prices = {}
-            for ticker, ticker_stats in stats.items():
-                ohlc = simulate_ohlc(
-                    ticker_stats.mean, ticker_stats.sd, current_prices[ticker], interval
-                )
-                new_prices[ticker] = ohlc
-                current_prices[ticker] = ohlc["close"]
-            yield new_prices
-            await asyncio.sleep(1 * 60)
-
-    async def run(self, stats, start_prices, interval):
         try:
-            if self.realtime:
-                async for new_prices in self.generate_realtime_prices(
-                    stats, start_prices, interval
-                ):
-                    json_data = json.dumps(new_prices)
-                    broadcast(self.connections, json_data)
+            if not self.simulated_prices:
+                if not self.stats or not self.start_prices:
+                    raise ValueError(
+                        "Stats and start prices are required for simulation."
+                    )
+                logger.info("Generating simulated prices...")
+
+                self.simulated_prices = simulate_prices(
+                    self.stats,
+                    self.start_prices,
+                    self.generated_prices_count,
+                    self.interval,
+                )
+
+            max_length = max(len(prices) for prices in self.simulated_prices.values())
+            now = datetime.now()
+
+            for i in range(max_length):
+                if websocket not in self.connections:
+                    logger.info("Client disconnected, stopping simulation")
+                    break
+
+                batch_data = []
+                current_time = now + timedelta(seconds=i)
+
+                for ticker, prices in self.simulated_prices.items():
+                    if i < len(prices):
+                        price_data = prices[i].copy()
+                        self.current_prices[ticker] = price_data["close"]
+                        batch_data.append(
+                            {
+                                "timestamp": current_time.isoformat(),
+                                "ticker": ticker,
+                                **price_data,
+                            }
+                        )
+
+                if batch_data:
+                    try:
+                        await websocket.send(json.dumps(batch_data))
+                    except websockets.exceptions.ConnectionClosedOK:
+                        logger.info("Client disconnected gracefully.")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error sending data to WebSocket: {e}")
+                        break
+
+                # Introduce a slight delay between ticks (to simulate market data feeds)
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+        finally:
+            self.simulation_running = False
+
+    async def generate_realtime_prices(self) -> AsyncGenerator[List[Dict], None]:
+        """Generates realtime prices indefinitely."""
+        if not self.stats:
+            raise ValueError("Stats are required for realtime simulation.")
+        while True:
+            batch_data = []
+            current_time = datetime.now().isoformat()
+
+            for ticker, ticker_stats in self.stats.items():
+                ohlc = simulate_ohlc(
+                    ticker_stats.mean,
+                    ticker_stats.sd,
+                    self.current_prices[ticker],
+                    self.interval,
+                )
+                self.current_prices[ticker] = ohlc["close"]
+
+                batch_data.append({"timestamp": current_time, "ticker": ticker, **ohlc})
+
+            yield batch_data
+            # Wait for 1 minute between updates
+            await asyncio.sleep(60)
+
+    async def broadcast_to_all(self, data):
+        """Send data to all connected clients."""
+        if not self.connections:
+            return
+
+        message = json.dumps(data)
+        disconnected = set()
+
+        for websocket in self.connections:
+            try:
+                await websocket.send(message)
+            except websockets.exceptions.ConnectionClosed:
+                disconnected.add(websocket)
+            except Exception as e:
+                logger.error(f"Error sending to client: {e}")
+                disconnected.add(websocket)
+
+        # Remove disconnected clients
+        for websocket in disconnected:
+            self.connections.remove(websocket)
+
+    async def run_realtime(self):
+        """Run the realtime price generator and broadcast to all clients."""
+        try:
+            if not self.stats:
+                raise ValueError("Stats are required for realtime simulation.")
+
+            logger.info("Starting realtime price updates...")
+            async for price_batch in self.generate_realtime_prices():
+                if not self.connections:
+                    logger.info("No clients connected, pausing realtime updates")
+                    break
+                await self.broadcast_to_all(price_batch)
+        except asyncio.CancelledError:
+            logger.info("Realtime task was cancelled")
         except Exception as e:
-            logger.error(f"Error in WebSocket server: {e}")
+            logger.error(f"Error in realtime price generator: {e}")
+
+    async def handle_message(self, websocket, data):
+        action = data.get("action")
+        ticker = data.get("ticker")
+        quantity = data.get("quantity", 0)
+
+        if action == "buy":
+            price = self.current_prices.get(ticker, 0)
+            logger.info(f"Buying {quantity} shares of {ticker} at {price}")
+            await websocket.send(json.dumps({"status": "executed", "order": data}))
+
+        elif action == "sell":
+            price = self.current_prices.get(ticker, 0)
+            logger.info(f"Selling {quantity} shares of {ticker} at {price}")
+            await websocket.send(json.dumps({"status": "executed", "order": data}))
+
+        elif action == "short":
+            price = self.current_prices.get(ticker, 0)
+            logger.info(f"Shorting {quantity} shares of {ticker} at {price}")
+            await websocket.send(json.dumps({"status": "executed", "order": data}))
+
+        elif action == "reset":
+            logger.info("Resetting simulation")
+            await self.reset_simulation(websocket)
+            await websocket.send(json.dumps({"status": "reset"}))
+
+    async def reset_simulation(self, initiating_websocket=None):
+        """Resets the simulation to its initial state."""
+        logger.info("Resetting simulation...")
+
+        # Reset current prices to the provided start prices
+        self.current_prices = self.start_prices.copy()
+
+        # Cancel any running realtime task
+        if self.realtime and self.realtime_task:
+            self.realtime_task.cancel()
+
+        # Notify all clients that a reset occurred
+        reset_message = {"type": "reset", "message": "Simulation has been reset."}
+        await self.broadcast_to_all(reset_message)
+
+        # For realtime mode, restart the task
+        if self.realtime and self.connections:
+            self.realtime_task = asyncio.create_task(self.run_realtime())
+        # For simulation mode, restart emission for the client that requested reset
+        elif not self.realtime and initiating_websocket:
+            self.simulation_running = False  # Force reset of the simulation flag
+            await self.emit_price_ticks(initiating_websocket)
 
 
-async def handle_websocket_output(
-    simulated_prices: Dict[str, List[Dict[str, float]]],
-    start_prices: Dict[str, float],
-    stats: Dict[str, TickerStats],
-    interval: float,
-    websocket_uri: Optional[str],
+async def start_websocket_server(
+    simulated_prices: Optional[Dict[str, List[Dict[str, float]]]] = None,
+    start_prices: Optional[Dict[str, float]] = None,
+    stats: Optional[Dict[str, TickerStats]] = None,
+    interval: float = 1.0,
+    websocket_uri: Optional[str] = None,
     realtime: bool = False,
+    generated_prices_count: int = 252 * 1,
 ):
-    """Handles sending simulated prices to a WebSocket."""
+    """Start and run the WebSocket server."""
     if websocket_uri:
         uri = websocket_uri
     else:
         port = find_free_port()
         uri = f"ws://localhost:{port}"
-        logging.info(f"Starting WebSocket server on {uri}")
-        server = WebSocketServer(uri, simulated_prices, realtime)
 
-        async with websockets.serve(server.websocket_server, "localhost", port):
-            await server.run(start_prices, stats, interval)
-            await asyncio.Future()  # run forever
+    logger.info(
+        f"Starting WebSocket server on {uri} in {'realtime' if realtime else 'simulation'} mode"
+    )
+
+    server = WebSocketServer(
+        uri=uri,
+        simulated_prices=simulated_prices,
+        realtime=realtime,
+        start_prices=start_prices,
+        stats=stats,
+        interval=interval,
+        generated_prices_count=generated_prices_count,
+    )
+
+    async with websockets.serve(
+        server.websocket_server,
+        "localhost",
+        int(uri.split(":")[-1]),
+        ping_interval=30,
+        ping_timeout=40,
+    ):
+        # For realtime mode, we just keep the server running
+        # The realtime task will be started when clients connect
+        await asyncio.Future()  # Run forever
+
+
+# Example usage
+# if __name__ == "__main__":
+#     logging.basicConfig(level=logging.INFO)
+
+#     # Example stats and start prices
+#     example_stats = {
+#         "AAPL": TickerStats(mean=0.0001, sd=0.015),
+#         "MSFT": TickerStats(mean=0.0002, sd=0.012),
+#     }
+
+#     example_start_prices = {
+#         "AAPL": 150.0,
+#         "MSFT": 250.0,
+#     }
+
+#     # Choose mode: realtime=True for continuous updates, False for simulation
+#     import sys
+#     realtime_mode = len(sys.argv) > 1 and sys.argv[1].lower() == "realtime"
+
+#     asyncio.run(
+#         start_websocket_server(
+#             start_prices=example_start_prices,
+#             stats=example_stats,
+#             realtime=realtime_mode,
+#         )
+#     )

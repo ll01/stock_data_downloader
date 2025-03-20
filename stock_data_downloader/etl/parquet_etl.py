@@ -1,4 +1,5 @@
 import logging
+import math
 from pathlib import Path
 from typing import Dict, List, Union
 import pandas as pd
@@ -15,9 +16,16 @@ def load_stock_stats(
     """
     df = pd.read_parquet(sim_data_file_path)
     stats: Dict[str, TickerStats] = {}
+    skipped = 0
     for _, row in df.iterrows():
         ticker = row["ticker"]
+        if math.isnan(row["mean"]) or math.isnan(row["sd"]):
+            skipped = skipped + 1
+            continue
         stats[ticker] = TickerStats(mean=row["mean"], sd=row["sd"])
+    logging.info(f"Loaded {len(stats)} stock stats from {sim_data_file_path}")
+    if skipped > 0:
+        logging.warning(f"Skipped {skipped} rows with missing data")
     return stats
 
 

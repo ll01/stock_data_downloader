@@ -244,7 +244,7 @@ class WebSocketServer:
         action = data.get("action")
         ticker = data.get("ticker", "")
         quantity = data.get("quantity", 0)
-        price = self.current_prices.get(ticker, 0)
+        price = data.get("price", 0)
 
         if action == "reset":
             await self.reset_simulation(websocket)
@@ -266,6 +266,12 @@ class WebSocketServer:
         if quantity <= 0:
             await self._send_rejection(
                 websocket, data, reason=f"Invalid quantity: {quantity}"
+            )
+            return
+        
+        if price <= 0:
+            await self._send_rejection(
+                websocket, data, reason=f"Invalid price: {quantity}"
             )
             return
 
@@ -313,7 +319,7 @@ class WebSocketServer:
                     "ticker": data["ticker"],
                     "quantity": data["quantity"],
                     "price": price,
-                    "portfolio_value": self.portfolio.value(self.current_prices),
+                    "portfolio": vars(self.portfolio),
                     "timestamp": datetime.now().isoformat(),
                 }
             )

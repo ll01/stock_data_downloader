@@ -284,17 +284,18 @@ async def test_short_selling_workflow(mock_server):
     # Test short opening
     await mock_server.handle_message(
         mock_ws,
-        {"action": "short", "ticker": "AAPL", "quantity": 10}
+        {"action": "short", "ticker": "AAPL", "quantity": 10, "price": 420}
     )
     
     # Verify short position opened
     assert "AAPL" in mock_server.portfolio.short_positions
     assert mock_server.portfolio.short_positions["AAPL"][0] == 10
+    assert mock_server.portfolio.short_positions["AAPL"][1] == 420
     
     # Test short covering
     await mock_server.handle_message(
         mock_ws,
-        {"action": "cover", "ticker": "AAPL", "quantity": 10}
+        {"action": "cover", "ticker": "AAPL", "quantity": 10, "price": 420}
     )
     
     # Verify short position closed

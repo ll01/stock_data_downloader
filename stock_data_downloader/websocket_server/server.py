@@ -18,6 +18,10 @@ from stock_data_downloader.data_processing.simulation import (
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s"
+)
 
 
 def find_free_port():
@@ -56,25 +60,32 @@ class WebSocketServer:
         logger.info(f"New connection from {websocket.remote_address}")
 
     async def remove_connection(self, websocket: ServerConnection):
-        self.connections.remove(websocket)
-        logger.info(f"Connection from {websocket.remote_address} closed")
+        if websocket in self.connections:
+            await websocket.close()
+            self.connections.remove(websocket)
+            logger.info(f"Connection from {websocket.remote_address} closed")
 
     async def message_handler(self, websocket: ServerConnection):
-        while True:
-            try:
-                async for message in websocket:
-                    requests = json.loads(message)
-                    #able to handel multiple actions at once
-                    if isinstance(requests, dict):
-                        requests = [requests]
-                    for request in requests:
-                        if "action" in request:
-                            await self.handle_message(websocket, request)
-            except websockets.exceptions.ConnectionClosedOK:
-                logger.info("Client disconnected gracefully.")
-                return
-            except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+        try:
+            logger.info(f"Waiting for messages from {websocket.remote_address}")
+            async for message in websocket:
+                logger.info(f"Received message: {message}")
+                requests = json.loads(message)
+                if isinstance(requests, dict):
+                    requests = [requests]
+                for request in requests:
+                    if "action" in request:
+                        await self.handle_message(websocket, request)
+        except websockets.ConnectionClosedOK:
+            logger.info(f"WebSocket closed normally: {websocket.remote_address}")
+        except websockets.ConnectionClosedError as e:
+            logger.warning(f"WebSocket closed with error: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error in message handler: {e}")
+        finally:
+            logger.info(f"Removing connection: {websocket.remote_address}")
+            await websocket.wait_closed()
+            await self.remove_connection(websocket)
 
     async def websocket_server(self, websocket: ServerConnection):
         await self.add_connection(websocket)
@@ -98,11 +109,11 @@ class WebSocketServer:
             logger.error(f"WebSocket error: {e}")
         finally:
             await self.remove_connection(websocket)
-            await websocket.close()
+
             if self.realtime and not self.connections and self.realtime_task:
                 self.realtime_task.cancel()
 
-    async def emit_price_ticks(self, websocket):
+    async def emit_price_ticks(self, websocket: ServerConnection):
         """Send pre-generated simulation data to a single client."""
         if self.simulation_running:
             logger.info("Simulation already running for other clients, not restarting")
@@ -110,57 +121,59 @@ class WebSocketServer:
 
         self.simulation_running = True
 
-        try:
-            if not self.simulated_prices:
-                if not self.stats or not self.start_prices:
-                    raise ValueError(
-                        "Stats and start prices are required for simulation."
+        if not self.simulated_prices:
+            if not self.stats or not self.start_prices:
+                raise ValueError("Stats and start prices are required for simulation.")
+            logger.info("Generating simulated prices...")
+
+            self.simulated_prices = simulate_prices(
+                self.stats,
+                self.start_prices,
+                self.generated_prices_count,
+                self.interval,
+            )
+
+        max_length = max(len(prices) for prices in self.simulated_prices.values())
+        now = datetime.now()
+
+        for i in range(max_length):
+            if websocket not in self.connections:
+                logger.info("Client disconnected, stopping simulation")
+                break
+
+            batch_data = []
+            current_time = now + timedelta(seconds=i)
+
+            for ticker, prices in self.simulated_prices.items():
+                if i < len(prices):
+                    price_data = prices[i].copy()
+                    self.current_prices[ticker] = price_data["close"]
+                    batch_data.append(
+                        {
+                            "timestamp": current_time.isoformat(),
+                            "ticker": ticker,
+                            **price_data,
+                        }
                     )
-                logger.info("Generating simulated prices...")
 
-                self.simulated_prices = simulate_prices(
-                    self.stats,
-                    self.start_prices,
-                    self.generated_prices_count,
-                    self.interval,
-                )
-
-            max_length = max(len(prices) for prices in self.simulated_prices.values())
-            now = datetime.now()
-
-            for i in range(max_length):
-                if websocket not in self.connections:
-                    logger.info("Client disconnected, stopping simulation")
-                    break
-
-                batch_data = []
-                current_time = now + timedelta(seconds=i)
-
-                for ticker, prices in self.simulated_prices.items():
-                    if i < len(prices):
-                        price_data = prices[i].copy()
-                        self.current_prices[ticker] = price_data["close"]
-                        batch_data.append(
-                            {
-                                "timestamp": current_time.isoformat(),
-                                "ticker": ticker,
-                                **price_data,
-                            }
-                        )
-
-                if batch_data:
-                    try:
-                        await websocket.send(json.dumps(batch_data))
-                    except websockets.exceptions.ConnectionClosedOK:
-                        logger.info("Client disconnected gracefully.")
-                        break
-                    except Exception as e:
-                        logger.error(f"Error sending data to WebSocket: {e}")
-                        break
+            if batch_data:
+                try:
+                    await websocket.send(json.dumps(batch_data))
+                except websockets.ConnectionClosedOK:
+                    logger.info(
+                        f"WebSocket closed normally: {websocket.remote_address}"
+                    )
+                except websockets.ConnectionClosedError as e:
+                    logger.warning(f"WebSocket closed with error: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error in message handler: {e}")
+                finally:
+                    await self.remove_connection(websocket)
 
                 # Introduce a slight delay between ticks (to simulate market data feeds)
                 await asyncio.sleep(random.uniform(0.1, 0.3))
-        finally:
+                await asyncio.sleep(0) 
+
             self.simulation_running = False
 
     async def generate_realtime_prices(self) -> AsyncGenerator[List[Dict], None]:
@@ -268,7 +281,7 @@ class WebSocketServer:
                 websocket, data, reason=f"Invalid quantity: {quantity}"
             )
             return
-        
+
         if price <= 0:
             await self._send_rejection(
                 websocket, data, reason=f"Invalid price: {quantity}"

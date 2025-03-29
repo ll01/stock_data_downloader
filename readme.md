@@ -126,8 +126,23 @@ Contributions are welcome! If you'd like to contribute, please follow these step
 3. Commit your changes and push to the branch.
 4. Submit a pull request.
 
+## Supported Actions
+- `buy`: Purchase shares
+- `sell`: Sell owned shares
+- `short`: Borrow shares to sell (bet price will drop)
+- `cover`: Buy back shorted shares
+- `reset`: Reset simulation
 
 
+sequenceDiagram
+    Client->>Server: short AAPL 100
+    Server->>Portfolio: short("AAPL", 100, price)
+    Server->>Client: {status: executed, action: SHORT}
+    Client->>Server: cover AAPL 100
+    Server->>Portfolio: sell("AAPL", 100, price) # Triggers cover logic
+    Server->>Client: {status: executed, action: COVER}
+
+    
 ruff check --fix
 
 pip install .

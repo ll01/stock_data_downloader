@@ -14,7 +14,9 @@ dependencies = [
     "tqdm",
     "scipy",
     "websockets",
-    "pyarrow"
+    "pyarrow",
+    "pytest",
+    "pytest-asyncio",
 ]
 
 [project.optional-dependencies]

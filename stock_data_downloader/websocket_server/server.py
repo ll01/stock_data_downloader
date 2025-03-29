@@ -7,13 +7,15 @@ import socket
 from typing import AsyncGenerator, Dict, List, Optional, Set
 
 import websockets
-from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.server import ServerConnection
+# from websockets.asyncio.client import ServerConnection
 
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.data_processing.simulation import (
     simulate_ohlc,
     simulate_prices,
 )
+from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
 
@@ -44,41 +46,55 @@ class WebSocketServer:
         self.stats = stats  # Store stats for simulation
         self.interval = interval  # Store interval for updates
         self.generated_prices_count = generated_prices_count
-        self.connections: Set[ClientConnection] = set()
+        self.connections: Set[ServerConnection] = set()
         self.realtime_task = None  # Store task reference for cancellation
         self.simulation_running = False
+        self.portfolio = Portfolio()
 
-    async def add_connection(self, websocket: ClientConnection):
+    async def add_connection(self, websocket: ServerConnection):
         self.connections.add(websocket)
         logger.info(f"New connection from {websocket.remote_address}")
 
-    async def remove_connection(self, websocket: ClientConnection):
+    async def remove_connection(self, websocket: ServerConnection):
         self.connections.remove(websocket)
         logger.info(f"Connection from {websocket.remote_address} closed")
 
-    async def websocket_server(self, websocket):
+    async def message_handler(self, websocket: ServerConnection):
+        while True:
+            try:
+                async for message in websocket:
+                    data = json.loads(message)
+                    if "action" in data:
+                        await self.handle_message(websocket, data)
+            except websockets.exceptions.ConnectionClosedOK:
+                logger.info("Client disconnected gracefully.")
+                return
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+
+    async def websocket_server(self, websocket: ServerConnection):
         await self.add_connection(websocket)
 
-        if not self.realtime:
-            # For simulation mode, immediately start sending price data to the new client
-            await self.emit_price_ticks(websocket)
-        elif self.realtime and len(self.connections) == 1:
-            # For realtime mode, start the realtime task if this is the first connection
-            if self.realtime_task is None or self.realtime_task.done():
-                self.realtime_task = asyncio.create_task(self.run_realtime())
-
         try:
-            async for message in websocket:
-                data = json.loads(message)
-                if "action" in data:
-                    await self.handle_message(websocket, data)
-        except websockets.exceptions.ConnectionClosedOK:
-            logger.info("Client disconnected gracefully.")
+            if not self.realtime:
+                # In simulation mode, run both handlers
+                await asyncio.gather(
+                    self.emit_price_ticks(websocket),
+                    self.message_handler(websocket),
+                    return_exceptions=True,
+                )
+            else:
+                if len(self.connections) == 1 and (
+                    self.realtime_task is None or self.realtime_task.done()
+                ):
+                    self.realtime_task = asyncio.create_task(self.run_realtime())
+                await self.message_handler(websocket)
+
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
         finally:
             await self.remove_connection(websocket)
-            # If no more connections and in realtime mode, stop the task
+            await websocket.close()
             if self.realtime and not self.connections and self.realtime_task:
                 self.realtime_task.cancel()
 
@@ -204,30 +220,100 @@ class WebSocketServer:
         except Exception as e:
             logger.error(f"Error in realtime price generator: {e}")
 
+    async def _send_rejection(
+        self, websocket: ServerConnection, data: Dict, reason: str
+    ):
+        """Standard rejection format"""
+        await websocket.send(
+            json.dumps(
+                {
+                    "status": "rejected",
+                    "order": data,
+                    "reason": reason,
+                    "valid_actions": ["buy", "sell", "reset"],
+                    "valid_tickers": list(self.current_prices.keys()),
+                }
+            )
+        )
+
     async def handle_message(self, websocket, data):
         action = data.get("action")
         ticker = data.get("ticker")
         quantity = data.get("quantity", 0)
+        price = self.current_prices.get(ticker, 0)
 
-        if action == "buy":
-            price = self.current_prices.get(ticker, 0)
-            logger.info(f"Buying {quantity} shares of {ticker} at {price}")
-            await websocket.send(json.dumps({"status": "executed", "order": data}))
-
-        elif action == "sell":
-            price = self.current_prices.get(ticker, 0)
-            logger.info(f"Selling {quantity} shares of {ticker} at {price}")
-            await websocket.send(json.dumps({"status": "executed", "order": data}))
-
-        elif action == "short":
-            price = self.current_prices.get(ticker, 0)
-            logger.info(f"Shorting {quantity} shares of {ticker} at {price}")
-            await websocket.send(json.dumps({"status": "executed", "order": data}))
-
-        elif action == "reset":
-            logger.info("Resetting simulation")
+        if action == "reset":
             await self.reset_simulation(websocket)
-            await websocket.send(json.dumps({"status": "reset"}))
+            await websocket.send(
+                json.dumps(
+                    {
+                        "status": "reset",
+                        "portfolio": json.dumps(vars(self.portfolio)),
+                    }
+                )
+            )
+            return
+
+        # Input validation
+        if not ticker:
+            await self._send_rejection(websocket, data, reason="Missing ticker")
+            return
+
+        if quantity <= 0:
+            await self._send_rejection(
+                websocket, data, reason=f"Invalid quantity: {quantity}"
+            )
+            return
+
+        if ticker not in self.current_prices:
+            await self._send_rejection(
+                websocket, data, reason=f"Unknown ticker: {ticker}"
+            )
+            return
+
+        try:
+            if action == "buy":
+                self.portfolio.buy(ticker, quantity, price)
+                await self._send_execution(websocket, data, price, "BUY")
+
+            elif action == "sell":
+                self.portfolio.sell(ticker, quantity, price)
+                await self._send_execution(websocket, data, price, "SELL")
+
+            elif action == "short":
+                self.portfolio.short(ticker, quantity, price)
+                await self._send_execution(websocket, data, price, "SHORT")
+
+            elif action == "cover":  # New action to close short positions
+                self.portfolio.sell(
+                    ticker, quantity, price
+                )  # Uses same sell logic for covering
+                await self._send_execution(websocket, data, price, "COVER")
+
+            else:
+                await self._send_rejection(
+                    websocket, data, reason=f"Unknown action: {action}"
+                )
+
+        except Exception as e:
+            logger.error(f"Trade execution failed: {str(e)}")
+            await self._send_rejection(websocket, data, reason=str(e))
+
+    async def _send_execution(self, websocket, data, price, action_type):
+        """Send standardized execution confirmation"""
+        await websocket.send(
+            json.dumps(
+                {
+                    "status": "executed",
+                    "action": action_type,
+                    "ticker": data["ticker"],
+                    "quantity": data["quantity"],
+                    "price": price,
+                    "portfolio_value": self.portfolio.value(self.current_prices),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+        )
 
     async def reset_simulation(self, initiating_websocket=None):
         """Resets the simulation to its initial state."""
@@ -235,6 +321,8 @@ class WebSocketServer:
 
         # Reset current prices to the provided start prices
         self.current_prices = self.start_prices.copy()
+
+        self.portfolio = Portfolio()
 
         # Cancel any running realtime task
         if self.realtime and self.realtime_task:
@@ -249,7 +337,7 @@ class WebSocketServer:
             self.realtime_task = asyncio.create_task(self.run_realtime())
         # For simulation mode, restart emission for the client that requested reset
         elif not self.realtime and initiating_websocket:
-            self.simulation_running = False  # Force reset of the simulation flag
+            self.simulation_running = False  # Fce reset of the simulation flag
             await self.emit_price_ticks(initiating_websocket)
 
 

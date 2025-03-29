@@ -6,7 +6,7 @@ from stock_data_downloader.config.sim_arg_parser import parse_arguments
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.data_processing.simulation import simulate_prices
 from stock_data_downloader.etl.parquet_etl import load_stock_stats, save_to_parquet
-from stock_data_downloader.websocket_server.server import handle_websocket_output
+from stock_data_downloader.websocket_server.server import start_websocket_server
 
 
 def generate_basic_start_prices(
@@ -31,7 +31,7 @@ async def main():
         if args.output_format == "parquet":
             save_to_parquet(simulated_prices, args.output_file)
         elif args.output_format == "websocket":
-            await handle_websocket_output(
+            await start_websocket_server(
                 simulated_prices,
                 start_prices,
                 stats,

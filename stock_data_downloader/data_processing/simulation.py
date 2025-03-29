@@ -1,11 +1,8 @@
-import logging
 from math import exp
-from pathlib import Path
 import random
 from multiprocessing import Pool
-from typing import Dict, List, Union
+from typing import Dict, List
 
-import pandas as pd
 
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 

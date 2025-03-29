@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import socket
-from typing import AsyncGenerator, Dict, List, Optional, Set
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import websockets
 from websockets.asyncio.server import ServerConnection
@@ -63,9 +63,13 @@ class WebSocketServer:
         while True:
             try:
                 async for message in websocket:
-                    data = json.loads(message)
-                    if "action" in data:
-                        await self.handle_message(websocket, data)
+                    requests = json.loads(message)
+                    #able to handel multiple actions at once
+                    if isinstance(requests, dict):
+                        requests = [requests]
+                    for request in requests:
+                        if "action" in request:
+                            await self.handle_message(websocket, request)
             except websockets.exceptions.ConnectionClosedOK:
                 logger.info("Client disconnected gracefully.")
                 return
@@ -236,9 +240,9 @@ class WebSocketServer:
             )
         )
 
-    async def handle_message(self, websocket, data):
+    async def handle_message(self, websocket: ServerConnection, data: Dict[str, Any]):
         action = data.get("action")
-        ticker = data.get("ticker")
+        ticker = data.get("ticker", "")
         quantity = data.get("quantity", 0)
         price = self.current_prices.get(ticker, 0)
 

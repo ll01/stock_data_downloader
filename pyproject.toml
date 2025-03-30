@@ -16,6 +16,8 @@ dependencies = [
     "websockets",
     "pyarrow",
     "pytest",
+    
+    "pytest-cov",
     "pytest-asyncio",
 ]
 

@@ -41,6 +41,7 @@ class WebSocketServer:
         stats: Optional[Dict[str, TickerStats]] = None,
         interval: float = 1.0,
         generated_prices_count: int = 252 * 1,  # 1 year of daily data
+        max_in_flight_messages: int = 10
     ):
         self.uri = uri
         self.simulated_prices = simulated_prices
@@ -54,6 +55,8 @@ class WebSocketServer:
         self.realtime_task = None  # Store task reference for cancellation
         self.simulation_running = False
         self.portfolio = Portfolio()
+        self.message_queue = asyncio.Queue()  # Queue to manage in-flight messages
+        self.max_in_flight_messages = max_in_flight_messages  # Max queue size
 
     async def add_connection(self, websocket: ServerConnection):
         self.connections.add(websocket)
@@ -68,7 +71,8 @@ class WebSocketServer:
     async def message_handler(self, websocket: ServerConnection):
         try:
             logger.info(f"Waiting for messages from {websocket.remote_address}")
-            async for message in websocket:
+            while True:
+                message = await websocket.recv()
                 logger.info(f"Received message: {message}")
                 requests = json.loads(message)
                 if isinstance(requests, dict):
@@ -76,7 +80,8 @@ class WebSocketServer:
                 for request in requests:
                     if "action" in request:
                         await self.handle_message(websocket, request)
-        except websockets.ConnectionClosedOK:
+                await asyncio.sleep(0)
+        except websockets.ConnectionClosedOK as e:
             logger.info(f"WebSocket closed normally: {websocket.remote_address}")
         except websockets.ConnectionClosedError as e:
             logger.warning(f"WebSocket closed with error: {e}")
@@ -114,65 +119,74 @@ class WebSocketServer:
                 self.realtime_task.cancel()
 
     async def emit_price_ticks(self, websocket: ServerConnection):
-        """Send pre-generated simulation data to a single client."""
-        if self.simulation_running:
-            logger.info("Simulation already running for other clients, not restarting")
-            return
+            """Send pre-generated simulation data to a single client."""
+            self.simulation_running = True
 
-        self.simulation_running = True
+            if not self.simulated_prices:
+                if not self.stats or not self.start_prices:
+                    raise ValueError("Stats and start prices are required for simulation.")
+                logger.info("Generating simulated prices...")
 
-        if not self.simulated_prices:
-            if not self.stats or not self.start_prices:
-                raise ValueError("Stats and start prices are required for simulation.")
-            logger.info("Generating simulated prices...")
+                self.simulated_prices = simulate_prices(
+                    self.stats,
+                    self.start_prices,
+                    self.generated_prices_count,
+                    self.interval,
+                )
 
-            self.simulated_prices = simulate_prices(
-                self.stats,
-                self.start_prices,
-                self.generated_prices_count,
-                self.interval,
-            )
+            max_length = max(len(prices) for prices in self.simulated_prices.values())
+            now = datetime.now()
 
-        max_length = max(len(prices) for prices in self.simulated_prices.values())
-        now = datetime.now()
+            for i in range(max_length):
+                if websocket not in self.connections:
+                    logger.info("Client disconnected, stopping simulation")
+                    break
 
-        for i in range(max_length):
-            if websocket not in self.connections:
-                logger.info("Client disconnected, stopping simulation")
-                break
+                batch_data = []
+                current_time = now + timedelta(seconds=i)
 
-            batch_data = []
-            current_time = now + timedelta(seconds=i)
+                for ticker, prices in self.simulated_prices.items():
+                    if i < len(prices):
+                        price_data = prices[i].copy()
+                        self.current_prices[ticker] = price_data["close"]
+                        batch_data.append(
+                            {
+                                "timestamp": current_time.isoformat(),
+                                "ticker": ticker,
+                                **price_data,
+                            }
+                        )
 
-            for ticker, prices in self.simulated_prices.items():
-                if i < len(prices):
-                    price_data = prices[i].copy()
-                    self.current_prices[ticker] = price_data["close"]
-                    batch_data.append(
-                        {
-                            "timestamp": current_time.isoformat(),
-                            "ticker": ticker,
-                            **price_data,
-                        }
-                    )
+                if batch_data:
+                    try:
+                        # Add batch data to the message queue
+                        await self.message_queue.put(batch_data)
 
-            if batch_data:
-                try:
-                    await websocket.send(json.dumps(batch_data))
-                except websockets.ConnectionClosedOK:
-                    logger.info(
-                        f"WebSocket closed normally: {websocket.remote_address}"
-                    )
-                except websockets.ConnectionClosedError as e:
-                    logger.warning(f"WebSocket closed with error: {e}")
-                except Exception as e:
-                    logger.error(f"Unexpected error in message handler: {e}")
-                finally:
-                    await self.remove_connection(websocket)
+                        # If the number of messages in the queue is too high, slow down
+                        while self.message_queue.qsize() > self.max_in_flight_messages:
+                            logger.info(f"Too many messages in flight ({self.message_queue.qsize()}). Slowing down.")
+                            await asyncio.sleep(30)  # Slow down emission to avoid overloading
 
-                # Introduce a slight delay between ticks (to simulate market data feeds)
-                await asyncio.sleep(random.uniform(0.1, 0.3))
-                await asyncio.sleep(0) 
+                        # Send messages from the queue to the websocket
+                        if not self.message_queue.empty():
+                            message_to_send = await self.message_queue.get()
+                            # message_to_send = json.dumps({
+                            #     "action": "update",
+                            #     "data": message_to_send
+                            # })
+                            await websocket.send(json.dumps(message_to_send))
+
+                    except websockets.ConnectionClosedOK:
+                        logger.info(f"WebSocket closed normally: {websocket.remote_address}")
+                    except websockets.ConnectionClosedError as e:
+                        logger.warning(f"WebSocket closed with error: {e}")
+                    except Exception as e:
+                        logger.error(f"Unexpected error in message handler: {e}")
+                        break
+
+                    # Introduce a slight delay between ticks (to simulate market data feeds)
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                    await asyncio.sleep(0) 
 
             self.simulation_running = False
 
@@ -398,8 +412,9 @@ async def start_websocket_server(
         server.websocket_server,
         "localhost",
         int(uri.split(":")[-1]),
-        ping_interval=30,
-        ping_timeout=40,
+        ping_interval=None,
+        ping_timeout=None,
+        
     ):
         # For realtime mode, we just keep the server running
         # The realtime task will be started when clients connect

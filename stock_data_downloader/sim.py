@@ -24,7 +24,7 @@ async def main():
     stats = load_stock_stats(args.sim_data_file)
     start_prices = generate_basic_start_prices(args.start_price, stats)
     simulated_prices = simulate_prices(
-        stats, start_prices, args.timesteps, args.interval, 
+        stats, start_prices, args.time_steps, args.interval, args.seed
     )
 
     if simulated_prices:  # Check if simulation was successful
@@ -38,6 +38,7 @@ async def main():
                 args.interval,
                 args.websocket_uri,
                 args.realtime,
+                args.seed
             )
 
 

@@ -39,7 +39,7 @@ def parse_arguments() -> argparse.Namespace:
 
     # Simulation parameters
     parser.add_argument(
-        "--timesteps",
+        "--time-steps",
         type=int,
         default=100,
         help="Number of timesteps to simulate (default: 100)",
@@ -64,8 +64,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=float,
-        default=1.0,  # Default interval of 1 second (or whatever unit you're using)
-        help="Time interval between timesteps (default: 1.0)",
+        default=1,  # Default interval of 1 day
+        help="Time interval between timesteps (default: 1)",
     )
     
     parser.add_argument(
@@ -74,8 +74,17 @@ def parse_arguments() -> argparse.Namespace:
         default=False,
         help="Whether to simulate realtime prices (default: False)",
     )
+    
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility (default: None)",
+    )
+
 
     return parser.parse_args()
+
 
 #example
 # python -m stock_data_downloader.sim --output-format websocket --sim_data_file C:\Users\enti2\programming\trading_bot\stock_data_downloader\stock_data_downloader\data\sim_data.parquet

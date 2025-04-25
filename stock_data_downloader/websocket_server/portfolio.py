@@ -10,6 +10,8 @@ class Portfolio:
         self.positions = {}  # {ticker: (quantity, avg_price)}
         self.short_positions = {}  # {ticker: (quantity, entry_price)}
         self.trade_history = []
+        self.initial_cash = initial_cash
+
 
     def buy(self, ticker: str, quantity: int, price: float):
         cost = quantity * price

@@ -54,12 +54,9 @@ def simulate_single_ticker(
     prices: List[Dict[str, float]] = []
     current_price = start_price
     rng = random.Random(seed)  # Create a local random number generator
-    for i in range(timesteps):
+    for _ in range(timesteps):
         # Seed the local RNG based on the timestep to ensure consistent randomness
         # for each timestep across different runs with the same initial seed.
-        if seed:
-            timestep_seed = seed + i
-            rng.seed(timestep_seed)
         ohlc = simulate_ohlc(ticker_stats.mean, ticker_stats.sd, rng, current_price, interval)
         prices.append(ohlc)
         current_price = ohlc["close"]
@@ -71,7 +68,7 @@ def simulate_prices(
     start_prices: Dict[str, float],
     timesteps: int = 100,
     interval: float = 1.0,
-    seed: Optional[int] = 42,  # Add a seed for overall reproducibility
+    seed: Optional[int] = None,  # Add a seed for overall reproducibility
 ) -> Dict[str, List[Dict[str, float]]]:
     """
     Simulate prices for multiple tickers over a given number of timesteps.

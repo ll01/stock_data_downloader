@@ -32,13 +32,14 @@ async def main():
             save_to_parquet(simulated_prices, args.output_file)
         elif args.output_format == "websocket":
             await start_websocket_server(
+                args.seed,
                 simulated_prices,
                 start_prices,
                 stats,
                 args.interval,
                 args.websocket_uri,
                 args.realtime,
-                args.seed
+                args.time_steps
             )
 
 

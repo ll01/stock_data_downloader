@@ -58,7 +58,7 @@ class WebSocketServer:
         self.portfolio = Portfolio()
         self.message_queue = asyncio.Queue()  # Queue to manage in-flight messages
         self.max_in_flight_messages = max_in_flight_messages  # Max queue size
-        self.seed = None  # Seed for random number generation
+        self.seed = seed
 
 
     async def add_connection(self, websocket: ServerConnection):
@@ -84,7 +84,7 @@ class WebSocketServer:
                     if "action" in request:
                         await self.handle_message(websocket, request)
                 await asyncio.sleep(0)
-        except websockets.ConnectionClosedOK as e:
+        except websockets.ConnectionClosedOK:
             logger.info(f"WebSocket closed normally: {websocket.remote_address}")
         except websockets.ConnectionClosedError:
             logger.exception("WebSocket closed with error:")
@@ -146,7 +146,8 @@ class WebSocketServer:
                 break
 
             batch_data = []
-            current_time = now + timedelta(seconds=i)
+            current_time = now + timedelta(days=i * self.interval)
+
 
             for ticker, prices in self.simulated_prices.items():
                 if i < len(prices):
@@ -268,7 +269,11 @@ class WebSocketServer:
         ticker = data.get("ticker", "")
         quantity = data.get("quantity", 0)
         price = data.get("price", 0)
+        timestamp = data.get("timestamp", datetime.now().isoformat())
         cloid = data.get("cloid")
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp)
+
 
         if action == "reset":
             await self.reset_simulation(websocket)
@@ -340,21 +345,21 @@ class WebSocketServer:
         try:
             if action == "buy":
                 self.portfolio.buy(ticker, quantity, price)
-                await self._send_execution(websocket, data, price, "BUY", cloid)
+                await self._send_execution(websocket, data, price, "BUY", timestamp, cloid)
 
             elif action == "sell":
                 self.portfolio.sell(ticker, quantity, price)
-                await self._send_execution(websocket, data, price, "SELL", cloid)
+                await self._send_execution(websocket, data, price, "SELL", timestamp, cloid)
 
             elif action == "short":
                 self.portfolio.short(ticker, quantity, price)
-                await self._send_execution(websocket, data, price, "SHORT", cloid)
+                await self._send_execution(websocket, data, price, "SHORT", timestamp, cloid)
 
             elif action == "cover":  # New action to close short positions
                 self.portfolio.sell(
                     ticker, quantity, price
                 )  # Uses same sell logic for covering
-                await self._send_execution(websocket, data, price, "COVER", cloid)
+                await self._send_execution(websocket, data, price, "COVER", timestamp, cloid)
 
             else:
                 await self._send_rejection(
@@ -365,7 +370,7 @@ class WebSocketServer:
             logger.error(f"Trade execution failed: {str(e)}")
             await self._send_rejection(websocket, data, reason=str(e))
 
-    async def _send_execution(self, websocket, data, price, action_type, cloid=None):
+    async def _send_execution(self, websocket, data, price, action_type, timestamp, cloid=None):
         payload = {
             "status": "success",
             "action": action_type,
@@ -373,7 +378,7 @@ class WebSocketServer:
             "quantity": data["quantity"],
             "price": price,
             "portfolio": vars(self.portfolio),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": (timestamp + timedelta(minutes=1)).isoformat(),
             "cloid": cloid,
         }
         await self.send(websocket, type="trade_execution", payload=payload)
@@ -403,6 +408,7 @@ class WebSocketServer:
 
         # Reset current prices to the provided start prices
         self.current_prices = self.start_prices.copy()
+        self.simulated_prices = None
 
         self.portfolio = Portfolio()
 
@@ -424,6 +430,7 @@ class WebSocketServer:
 
 
 async def start_websocket_server(
+    seed: Optional[int],
     simulated_prices: Optional[Dict[str, List[Dict[str, float]]]] = None,
     start_prices: Optional[Dict[str, float]] = None,
     stats: Optional[Dict[str, TickerStats]] = None,
@@ -431,6 +438,7 @@ async def start_websocket_server(
     websocket_uri: Optional[str] = None,
     realtime: bool = False,
     generated_prices_count: int = 252 * 1,
+    
 ):
     """Start and run the WebSocket server."""
     if websocket_uri:
@@ -442,7 +450,6 @@ async def start_websocket_server(
     logger.info(
         f"Starting WebSocket server on {uri} in {'realtime' if realtime else 'simulation'} mode"
     )
-
     server = WebSocketServer(
         uri=uri,
         simulated_prices=simulated_prices,
@@ -451,6 +458,7 @@ async def start_websocket_server(
         stats=stats,
         interval=interval,
         generated_prices_count=generated_prices_count,
+        seed=seed
     )
 
     async with websockets.serve(

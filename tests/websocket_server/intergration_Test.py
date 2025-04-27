@@ -2,7 +2,6 @@ import asyncio
 import json
 import unittest
 from websockets import connect
-from unittest.mock import MagicMock
 
 import websockets
 

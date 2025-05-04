@@ -13,7 +13,7 @@ class Portfolio:
         self.trade_history = []
         self.initial_cash = initial_cash
 
-    def buy(self, ticker: str, quantity: int, price: float):
+    def buy(self, ticker: str, quantity: float, price: float):
         cost = quantity * price
         if self.cash >= cost:
             self.cash -= cost
@@ -28,7 +28,7 @@ class Portfolio:
         else:
             logger.warning("Not enough cash to execute buy order")
 
-    def short(self, ticker: str, quantity: int, price: float):
+    def short(self, ticker: str, quantity: float, price: float):
         # Short selling: sell first, buy back later
         self.cash += quantity * price  # Receive cash for selling borrowed shares
         if ticker in self.short_positions:
@@ -40,7 +40,7 @@ class Portfolio:
             self.short_positions[ticker] = (quantity, price)
         self.trade_history.append(("SHORT", ticker, quantity, price, self.cash))
 
-    def sell(self, ticker: str, quantity: int, price: float):
+    def sell(self, ticker: str, quantity: float, price: float):
         if ticker in self.positions and self.positions[ticker][0] >= quantity:
             self.cash += quantity * price
             new_qty = self.positions[ticker][0] - quantity
@@ -76,8 +76,8 @@ class Portfolio:
         )
         return self.cash + long_value + short_value
 
-    def calculate_total_return(self) -> float:
-        final_value = self.cash
+    
+    def calculate_total_value(self):
         market_value_long = 0
         market_value_short = 0
 
@@ -99,8 +99,11 @@ class Portfolio:
                     abs(quantity) * last_price
                 )  # Value of short position
 
-        final_value = self.cash + market_value_long - market_value_short
+        return self.cash + market_value_long - market_value_short
 
+
+    def calculate_total_return(self) -> float:
+        final_value = self.calculate_total_value()
         return (
             (final_value - self.initial_cash) / self.initial_cash
             if self.initial_cash

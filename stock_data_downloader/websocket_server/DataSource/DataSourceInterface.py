@@ -11,12 +11,12 @@ class DataSourceInterface(ABC):
 
     def __init__(self, tickers: List[str] = [],  interval: Optional[str] = None):
         self._subscribed_tickers: Set[str] = set(tickers) if tickers else set()
-        self._callback: Optional[Callable[[str, Any], None]] = None
+        self._callback: Optional[Callable[[Any], None]] = None
         self.current_prices: Dict[str, float] = {} # Store latest prices
         self.tickers = tickers
 
     @abstractmethod
-    async def get_historical_data(self, tickers: List[str] = [] , interval: str= "") -> Dict:
+    async def get_historical_data(self, tickers: List[str] = [] , interval: str= "") -> Dict[str, List[Dict[str, float]]]:
         """Fetch historical data (e.g., OHLCV) for backtesting."""
         pass
 
@@ -40,7 +40,7 @@ class DataSourceInterface(ABC):
                         if isinstance(update, dict) and "ticker" in update and "close" in update:
                              # Use 'close' price as the representative current price
                             self.current_prices[update["ticker"]] = float(update["close"])
-                self._callback(msg_type, payload)
+                self._callback(payload)
             except Exception:
                 logging.exception("Error occurred in data source callback")
         else:

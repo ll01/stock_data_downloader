@@ -24,9 +24,9 @@ MAPPING_DIR = "hyperliquid_order_mappings"
 
 class HyperliquidExchange(ExchangeInterface):
     def __init__(
-        self, api_keys: Optional[Dict[str, str]] = None, network: str = "mainnet"
+        self, config: Optional[Dict[str, str]] = None, network: str = "mainnet"
     ):
-        self.api_keys = api_keys or {}
+        self.api_keys = config or {}
         if "secret_key" not in self.api_keys:
              raise ValueError("secret_key must be provided in api_keys")
 
@@ -173,6 +173,7 @@ class HyperliquidExchange(ExchangeInterface):
                 # Assuming a structure where status details are directly in the response dict:
                 return {
                     "order_id": order_id,
+                    "ticker": ticker,
                     "status": status.get("status", "unknown"), # e.g., "open", "filled", "canceled"
                     "filled_qty": float(status.get("cumulativeFilled", 0)),
                     "avg_price": float(status.get("averageFilledPrice", 0)),

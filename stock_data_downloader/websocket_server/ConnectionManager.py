@@ -68,6 +68,7 @@ class ConnectionManager:
 
         for websocket in self.connections:
             try:
+                
                 await self.send(websocket, type, payload)
             except websockets.exceptions.ConnectionClosed:
                 disconnected.add(websocket)

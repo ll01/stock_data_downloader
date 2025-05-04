@@ -3,7 +3,7 @@ name = "stock_data_downloader"
 version = "0.1"
 description = "A sample Python project"
 readme = "README.md"
-requires-python = ">=3.9,<4.0"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "yfinance[nospam]",
     "pandas",
@@ -20,6 +20,7 @@ dependencies = [
     "pytest-cov",
     "pytest-asyncio",
     "hyperliquid-python-sdk (>=0.14.0,<0.15.0)",
+    "yaml",
 ]
 
 [project.optional-dependencies]

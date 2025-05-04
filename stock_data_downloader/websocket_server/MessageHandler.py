@@ -160,10 +160,34 @@ class MessageHandler:
         except Exception as e:
             logging.exception("Error placing order with HyperliquidExchange:")
             return self._send_rejection(data, reason=f"Error placing order: {e}")
+    
+    async def process_order_update(self, update_data: dict, realtime:bool,  portfolio: Portfolio ):
+        logging.debug(f"Received order update: {update_data}")
 
+        order = update_data.get("order", {})
+        status = update_data.get("status")
+        trade_type = "trade_partial"
+        if status == "filled":
+            trade_type = "trade_execution"
+        if status in ["rejected", "marginCanceled", "canceled"]:
+            trade_type = "trade_rejection"
+
+        payload = {
+            "status": "success",
+            "ticker": order.get("coin"),
+            "current_quantity": order.get("sz"),
+            "requested_quantity": order.get("origSz"),
+            "price": order.get("limitPx"),
+            "timestamp": order.get("statusTimestamp"),
+            "cloid": order.get("cloid", ""),
+            "exchange_id": order.get("oid", ""),
+        }
+        if not realtime:
+            payload["portfolio"] = portfolio
+        return HandleResult(result_type=trade_type, payload=payload)
 
     def _send_execution(
-        self, websocket, data, price, action_type, timestamp, cloid=None
+        self, websocket, data, price, action_type, timestamp, realtime, portfolio, cloid=None
     ):
         payload = {
             "status": "success",
@@ -171,12 +195,14 @@ class MessageHandler:
             "ticker": data["ticker"],
             "quantity": data["quantity"],
             "price": price,
-            # "portfolio": vars(self.portfolio),
             "portfolio": {},
             "timestamp": (timestamp + timedelta(minutes=1)).isoformat(),
             "cloid": cloid,
         }
+        if not realtime:
+            payload["portfolio"] = portfolio
         return HandleResult(result_type="trade_execution", payload=payload)
+    
 
     def _send_rejection(self, data: Dict, reason: str):
         """Standard rejection format"""

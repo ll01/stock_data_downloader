@@ -16,7 +16,7 @@ The **Stock Data Downloader** is a Python application that fetches historical OH
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.11 or higher
 - `pip` for installing dependencies
 
 ### Steps
@@ -142,7 +142,27 @@ sequenceDiagram
     Server->>Portfolio: sell("AAPL", 100, price) # Triggers cover logic
     Server->>Client: {status: executed, action: COVER}
 
-    
+
+
+Supported Exchanges:
+
+TestExchange: Mock exchange for testing that uses a Portfolio instance
+HyperliquidExchange: Integration with Hyperliquid exchange
+CCTXExchange: Integration with various exchanges via the CCTX library
+
+Supported Data Sources:
+
+BrownianMotionDataSource: Simulated price data using Brownian motion
+HyperliquidDataSource: Live price data from Hyperliquid
+
+Quick Start
+
+Create a configuration file (see config.yaml for a template)
+Run the server:
+
+
+
+
 ruff check --fix
 
 pip install .

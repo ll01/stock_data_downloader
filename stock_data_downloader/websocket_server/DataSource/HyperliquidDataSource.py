@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,12 +20,13 @@ logger = logging.getLogger(__name__)
 class HyperliquidDataSource(DataSourceInterface):
     def __init__(
         self,
-        api_keys: Dict,
+        config: Dict,
         network: str = "mainnet",
         tickers: List[str] = [],
         interval: str = "1m",
     ):
         super().__init__(tickers, interval)
+        self.config = config
         self.network = network
         self.base_url = (
             constants.TESTNET_API_URL
@@ -32,7 +34,7 @@ class HyperliquidDataSource(DataSourceInterface):
             else constants.MAINNET_API_URL
         )
         self._info = Info(base_url=self.base_url)
-        self._callback: Optional[Callable[[str, Any], None]] = None
+        self._callback: Optional[Callable[[Any], None]] = None
         self.current_prices: Dict[str, float] = {}
         self.interval = interval
         self._subscriptions: List[Tuple[CandleSubscription, int]] = []
@@ -54,25 +56,21 @@ class HyperliquidDataSource(DataSourceInterface):
                 start_time = end_time - timedelta(hours=1)
                 start_timestamp = int(start_time.timestamp() * 1000)
                 end_timestamp = int(end_time.timestamp() * 1000)
-                ohlcv = await self._info.candles_snapshot(
+                ohlcv = self._info.candles_snapshot(
                     ticker, interval, start_timestamp, end_timestamp
                 )
                 result[ticker] = [
-                    {
-                        "timestamp": entry[0],
-                        "open": entry[1],
-                        "high": entry[2],
-                        "low": entry[3],
-                        "close": entry[4],
-                        "volume": entry[5],
-                    }
+                    self._map_candle_message(entry)
+                    
                     for entry in ohlcv
                 ]
             except Exception as e:
                 logger.error(f"Error fetching historical data for {ticker}: {e}")
+            finally:
+                await asyncio.sleep(0.25)
         return result
 
-    async def subscribe_realtime_data(self, callback: Callable[[str, Any], None]):
+    async def subscribe_realtime_data(self, callback: Callable[[Any], None]):
         """Subscribe to real-time price updates via WebSocket."""
 
         self._callback = callback
@@ -162,7 +160,7 @@ class HyperliquidDataSource(DataSourceInterface):
         """
         return {
             # "start_timestamp": msg["t"],
-            "timestamp": msg["T"],
+            "timestamp": datetime.fromtimestamp(msg["T"]/1000, timezone.utc).isoformat(),
             "ticker": msg["s"],
             # "interval":        msg["i"],
             "open": float(msg["o"]),
@@ -182,7 +180,7 @@ class HyperliquidDataSource(DataSourceInterface):
             payload = self._map_candle_message(candle_data)
 
             if self._callback:
-                self._callback("price_update", payload)
+                self._callback(payload)
         except Exception as e:
             logger.error(f"Error processing WebSocket message: {e}")
 

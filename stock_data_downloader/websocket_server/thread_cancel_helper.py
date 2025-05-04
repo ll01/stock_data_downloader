@@ -1,4 +1,5 @@
 
+import asyncio
 import ctypes
 import threading
 
@@ -16,3 +17,11 @@ def _async_raise(tid, exctype):
     elif res > 1:
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(tid), None)
         raise SystemError("PyThreadState_SetAsyncExc failed")
+
+def _call_async( coro):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    else:
+        return loop.run_until_complete(coro)

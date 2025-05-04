@@ -8,7 +8,7 @@ class Order:
     symbol: str
     side: str
     quantity: float
-    price: Optional[float]
+    price: float
     cloid: Optional[str] = None
     args: Optional[Dict] = None
 

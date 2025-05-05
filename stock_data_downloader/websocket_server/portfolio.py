@@ -13,9 +13,12 @@ class Portfolio:
         self.trade_history = []
         self.initial_cash = initial_cash
 
-    def buy(self, ticker: str, quantity: float, price: float):
+    def buy(self, ticker: str, quantity: float, price: float) -> bool:
         cost = quantity * price
+        success = False
+
         if self.cash >= cost:
+            success=True
             self.cash -= cost
             if ticker in self.positions:
                 old_qty, old_price = self.positions[ticker]
@@ -27,6 +30,7 @@ class Portfolio:
             self.trade_history.append(("BUY", ticker, quantity, price, self.cash))
         else:
             logger.warning("Not enough cash to execute buy order")
+        return success
 
     def short(self, ticker: str, quantity: float, price: float):
         # Short selling: sell first, buy back later
@@ -41,7 +45,9 @@ class Portfolio:
         self.trade_history.append(("SHORT", ticker, quantity, price, self.cash))
 
     def sell(self, ticker: str, quantity: float, price: float):
+        success=False
         if ticker in self.positions and self.positions[ticker][0] >= quantity:
+            success=True
             self.cash += quantity * price
             new_qty = self.positions[ticker][0] - quantity
             if new_qty == 0:
@@ -54,6 +60,7 @@ class Portfolio:
             and self.short_positions[ticker][0] >= quantity
         ):
             # Closing short position
+            success=True
             entry_price = self.short_positions[ticker][1]
             profit = (entry_price - price) * quantity
             self.cash += profit
@@ -64,7 +71,8 @@ class Portfolio:
                 self.short_positions[ticker] = (new_qty, entry_price)
             self.trade_history.append(("COVER", ticker, quantity, price, self.cash))
         else:
-            logger.warning("Not enough shares to execute sell order")
+            logger.error("Not enough shares to execute sell order")
+        return success
 
     def value(self, prices: Dict[str, float]):
         long_value = sum(

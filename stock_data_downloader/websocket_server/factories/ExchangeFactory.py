@@ -21,7 +21,7 @@ class ExchangeFactory:
     """Factory class for creating exchange instances based on configuration"""
     
     @staticmethod
-    def create_exchange(config: Dict[str, Any], portfolio: Portfolio) -> ExchangeInterface:
+    def create_exchange(config: Dict[str, Any], portfolio: Portfolio, simulation_mode: bool) -> ExchangeInterface:
         """
         Create an exchange instance based on the provided configuration
         
@@ -37,9 +37,7 @@ class ExchangeFactory:
         """
         exchange_type = config.get("type", "test").lower()
         
-        # Extract general exchange settings
-        simulation_mode = config.get("simulation_mode", True)
-        
+        # Extract general exchange settings        
         if exchange_type == "test":
             logger.info("Creating TestExchange")
             return TestExchange(

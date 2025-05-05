@@ -94,7 +94,7 @@ class WebSocketServer:
                             self.exchange,
                             self.portfolio,
                             self.simulation_running,
-                            self.simulation_running,
+                            self.realtime,
                         )
                         if message_for_client.result_type == RESET_REQUESTED:
                             await self.reset_simulation()
@@ -107,8 +107,8 @@ class WebSocketServer:
                 await asyncio.sleep(0)
         except websockets.ConnectionClosedOK:
             logger.info(f"WebSocket closed normally: {websocket.remote_address}")
-        except websockets.ConnectionClosedError:
-            logger.exception("WebSocket closed with error:")
+        except websockets.ConnectionClosedError as e:
+            logger.exception(f"WebSocket closed with error: {e}", exc_info=True)
         except Exception:
             logger.exception("Unexpected error in message handler")
         finally:

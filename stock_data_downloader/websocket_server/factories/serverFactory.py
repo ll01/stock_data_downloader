@@ -47,7 +47,7 @@ async def create_server_from_config(config: Dict[str, Any]) -> WebSocketServer:
     portfolio = Portfolio(initial_cash=initial_cash)
     
     # Create exchange using factory
-    exchange = ExchangeFactory.create_exchange(exchange_config, portfolio)
+    exchange = ExchangeFactory.create_exchange(exchange_config, portfolio, simulation_mode)
     
     # Create data source using factory
     data_source = DataSourceFactory.create_data_source(data_source_config)

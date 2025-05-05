@@ -134,8 +134,8 @@ class MessageHandler:
         quantity = data.get("quantity", 0)
         price = data.get("price", 0)
         cloid = data.get("cloid")
-        action = data.get("order_action")
-        if not ticker or quantity <= 0 or price <= 0 or action not in SIDEMAP:
+        order_type = data.get("order_type")
+        if not ticker or quantity <= 0 or price <= 0 or order_type not in SIDEMAP:
             return self._send_rejection(
                 data, reason="Invalid order parameters or unknown action."
             )
@@ -143,7 +143,7 @@ class MessageHandler:
         orders_to_place = [
             Order(
                 symbol=ticker,
-                side=SIDEMAP[action],
+                side=SIDEMAP[order_type],
                 quantity=quantity,
                 price=price,
                 cloid=cloid,

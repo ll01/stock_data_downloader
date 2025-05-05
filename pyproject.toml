@@ -20,7 +20,7 @@ dependencies = [
     "pytest-cov",
     "pytest-asyncio",
     "hyperliquid-python-sdk (>=0.14.0,<0.15.0)",
-    "yaml",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

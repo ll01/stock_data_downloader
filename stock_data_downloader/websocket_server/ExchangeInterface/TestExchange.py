@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 import logging
 import uuid
 from typing import Callable, Dict, Any, List
@@ -6,7 +7,7 @@ from typing import Callable, Dict, Any, List
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
     Order,
-    SIDEMAP,
+    OrderResult,
 )
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 
@@ -34,7 +35,7 @@ class TestExchange(ExchangeInterface):
         self.subscription_callbacks = {}
         self.loop = asyncio.get_event_loop()
 
-    async def place_order(self, orders: List[Order]) -> Dict[str, Any]:
+    async def place_order(self, orders: List[Order]) -> List[OrderResult]:
         """
         Place orders on the test exchange
 
@@ -44,7 +45,7 @@ class TestExchange(ExchangeInterface):
         Returns:
             Dict containing order IDs and execution status
         """
-        results = {}
+        results: List[OrderResult] = []
 
         for order in orders:
             # Generate a unique order ID
@@ -58,10 +59,14 @@ class TestExchange(ExchangeInterface):
             success = False
             try:
                 if side == "BUY".casefold():
-                    success = self.portfolio.buy(order.symbol, order.quantity, order.price)
+                    success = self.portfolio.buy(
+                        order.symbol, order.quantity, order.price
+                    )
                     status = "FILLED"
                 elif side == "SELL".casefold():
-                    success =self.portfolio.sell(order.symbol, order.quantity, order.price)
+                    success = self.portfolio.sell(
+                        order.symbol, order.quantity, order.price
+                    )
                     status = "FILLED"
                 else:
                     # Handle SHORT and COVER through the portfolio methods
@@ -80,7 +85,7 @@ class TestExchange(ExchangeInterface):
                 if not success:
                     status = "REJECTED"
                     logging.error(f"{order} failed to execute")
-            
+
                 # Store the order for reference
                 order_info = {
                     "id": order_id,
@@ -101,12 +106,19 @@ class TestExchange(ExchangeInterface):
                 else:
                     self.active_orders[order_id] = order_info
 
-                results[order_id] = {
-                    "success": status == "FILLED",
-                    "order_id": order_id,
-                    "status": status,
-                    "message": f"Order {status}",
-                }
+                results.append(
+                    OrderResult(
+                        cloid=order.cloid or "",
+                        oid=order_id,
+                        status=status,
+                        price=order.price,
+                        quantity=order.quantity,
+                        symbol=order.symbol,
+                        side=side,
+                        success=status == "FILLED",
+                        timestamp=order.timestamp,
+                    )
+                )
 
                 logger.info(
                     f"Order {order_id} {side} {order.quantity} {order.symbol} @ {order.price}: {status}"
@@ -114,11 +126,20 @@ class TestExchange(ExchangeInterface):
 
             except Exception as e:
                 logger.error(f"Error executing order: {e}")
-                results[order_id if "order_id" in locals() else str(uuid.uuid4())] = {
-                    "success": False,
-                    "status": "ERROR",
-                    "message": str(e),
-                }
+                results.append(
+                    OrderResult(
+                        cloid=order.cloid or "",
+                        oid=order_id,
+                        status="ERROR",
+                        price=order.price,
+                        quantity=order.quantity,
+                        symbol=order.symbol,
+                        side=side,
+                        success=False,
+                        timestamp=order.timestamp,
+                        message=str(e),
+                    )
+                )
 
         return results
 

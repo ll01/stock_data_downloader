@@ -9,8 +9,23 @@ class Order:
     side: str
     quantity: float
     price: float
+    timestamp: str
     cloid: Optional[str] = None
     args: Optional[Dict] = None
+
+@dataclass
+class OrderResult:
+    cloid: str
+    oid:str
+    status: str
+    side: str
+    price: float
+    quantity: float
+    symbol: str
+    success: bool
+    timestamp: str
+    message: Optional[str] = None
+
 
 SIDEMAP = {
     "BUY".casefold(): "BUY",
@@ -23,7 +38,7 @@ class ExchangeInterface(ABC):
     """Abstract base class for exchange integrations"""
 
     @abstractmethod
-    async def place_order(self, orders: List[Order]) -> Dict[str, Any]:
+    async def place_order(self, orders: List[Order]) -> List[OrderResult]:
         """Place a market order on the exchange"""
         pass
 

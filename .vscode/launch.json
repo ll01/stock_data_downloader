@@ -34,11 +34,20 @@
         },
 
         {
-            "name": "live testnet",
+            "name": "exchange example",
             "type": "debugpy",
             "request": "launch",
-            "module": "stock_data_downloader.live",
+            "module": "stock_data_downloader.example.hyperliquid_exchange_example",
             "console": "integratedTerminal", 
+        },
+
+        {
+            "name": "server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "stock_data_downloader.run_server",
+            "console": "integratedTerminal",
+            "args": ["--config", "C:/Users/enti2/programming/trading_bot/config.yml"]
         }
 
     ]

@@ -12,9 +12,9 @@ async def main():
     # Initialize CCXTDataSource for Hyperliquid
     data_source = HyperliquidDataSource(
         # exchange_id='hyperliquid',  # Ensure CCXT supports this exchange ID
-        api_keys={
-            'apiKey': 'key',
-            'secret': 'secret',
+        config={
+            'api_key': 'key',
+            'api_secret': 'secret',
         },
         tickers=tickers,
         interval='1m',  # OHLCV interval
@@ -24,8 +24,8 @@ async def main():
     # print(f"market format {markets[0]}")
 
     # Define a callback for real-time updates
-    def callback(msg_type: str, payload: Any):
-        print(f"Received update: {msg_type} - {payload}")
+    def callback( payload: Any):
+        print(f"Received update: {payload}")
 
     # Subscribe to real-time data
     await data_source.subscribe_realtime_data(callback)

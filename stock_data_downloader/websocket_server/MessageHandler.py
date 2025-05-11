@@ -4,7 +4,6 @@ import logging
 from typing import Any, Dict, List, Union
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
-    SIDEMAP,
     ExchangeInterface,
     Order,
 )
@@ -134,9 +133,9 @@ class MessageHandler:
         quantity = data.get("quantity", 0)
         price = data.get("price", 0)
         cloid = data.get("cloid")
-        order_type = data.get("order_type")
+        order_type = data.get("order_type","")
         timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        if not ticker or quantity <= 0 or price <= 0 or order_type not in SIDEMAP:
+        if not ticker or quantity <= 0 or price <= 0:
             return self._send_rejection(
                 data, reason="Invalid order parameters or unknown action."
             )

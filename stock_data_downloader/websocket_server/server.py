@@ -148,7 +148,7 @@ class WebSocketServer:
             if self._order_subscription_id:
                 await self.stop()
             # Needed because hyperliquid dosn't close its websocket connection correctly when it's done
-            os._exit(0) if os.name == "nt" else sys.exit(0)
+            # os._exit(0) if os.name == "nt" else sys.exit(0)
 
     async def run_realtime(self):
         """Run the realtime price generator and broadcast to all clients."""

@@ -18,36 +18,42 @@ class Portfolio:
         success = False
 
         if self.cash >= cost:
-            success=True
-            self.cash -= cost
-            if ticker in self.positions:
-                old_qty, old_price = self.positions[ticker]
-                new_qty = old_qty + quantity
-                new_avg_price = (old_qty * old_price + quantity * price) / new_qty
-                self.positions[ticker] = (new_qty, new_avg_price)
+            if (
+                ticker in self.short_positions
+                and self.short_positions[ticker][0] >= quantity
+            ):
+                # Cover Short Position
+                success = True
+                entry_price = self.short_positions[ticker][1]
+                profit = (entry_price - price) * quantity
+                self.cash += profit
+                new_qty = self.short_positions[ticker][0] - quantity
+                if new_qty == 0:
+                    del self.short_positions[ticker]
+                else:
+                    self.short_positions[ticker] = (new_qty, entry_price)
+                self.trade_history.append(("COVER", ticker, quantity, price, self.cash))
             else:
-                self.positions[ticker] = (quantity, price)
-            self.trade_history.append(("BUY", ticker, quantity, price, self.cash))
+                # Open Long Position
+                success = True
+                self.cash -= cost
+                if ticker in self.positions:
+                    old_qty, old_price = self.positions[ticker]
+                    new_qty = old_qty + quantity
+                    new_avg_price = (old_qty * old_price + quantity * price) / new_qty
+                    self.positions[ticker] = (new_qty, new_avg_price)
+                else:
+                    self.positions[ticker] = (quantity, price)
+                self.trade_history.append(("BUY", ticker, quantity, price, self.cash))
         else:
             logger.warning("Not enough cash to execute buy order")
         return success
 
-    def short(self, ticker: str, quantity: float, price: float):
-        # Short selling: sell first, buy back later
-        self.cash += quantity * price  # Receive cash for selling borrowed shares
-        if ticker in self.short_positions:
-            old_qty, old_price = self.short_positions[ticker]
-            new_qty = old_qty + quantity
-            new_avg_price = (old_qty * old_price + quantity * price) / new_qty
-            self.short_positions[ticker] = (new_qty, new_avg_price)
-        else:
-            self.short_positions[ticker] = (quantity, price)
-        self.trade_history.append(("SHORT", ticker, quantity, price, self.cash))
-
-    def sell(self, ticker: str, quantity: float, price: float):
-        success=False
+    def sell(self, ticker: str, quantity: float, price: float) -> bool:
+        success = False
         if ticker in self.positions and self.positions[ticker][0] >= quantity:
-            success=True
+            # Sell Long Position
+            success = True
             self.cash += quantity * price
             new_qty = self.positions[ticker][0] - quantity
             if new_qty == 0:
@@ -55,26 +61,21 @@ class Portfolio:
             else:
                 self.positions[ticker] = (new_qty, self.positions[ticker][1])
             self.trade_history.append(("SELL", ticker, quantity, price, self.cash))
-        elif (
-            ticker in self.short_positions
-            and self.short_positions[ticker][0] >= quantity
-        ):
-            # Closing short position
-            success=True
-            entry_price = self.short_positions[ticker][1]
-            profit = (entry_price - price) * quantity
-            self.cash += profit
-            new_qty = self.short_positions[ticker][0] - quantity
-            if new_qty == 0:
-                del self.short_positions[ticker]
-            else:
-                self.short_positions[ticker] = (new_qty, entry_price)
-            self.trade_history.append(("COVER", ticker, quantity, price, self.cash))
         else:
-            logger.error("Not enough shares to execute sell order")
+            # Open/Increase Short Position
+            success = True
+            self.cash += quantity * price  # Receive cash from short sale
+            if ticker in self.short_positions:
+                old_qty, old_price = self.short_positions[ticker]
+                new_qty = old_qty + quantity
+                new_avg_price = (old_qty * old_price + quantity * price) / new_qty
+                self.short_positions[ticker] = (new_qty, new_avg_price)
+            else:
+                self.short_positions[ticker] = (quantity, price)
+            self.trade_history.append(("SHORT", ticker, quantity, price, self.cash))
         return success
 
-    def value(self, prices: Dict[str, float]):
+    def value(self, prices: Dict[str, float]) -> float:
         long_value = sum(
             qty * prices[tick] for tick, (qty, _) in self.positions.items()
         )
@@ -84,7 +85,6 @@ class Portfolio:
         )
         return self.cash + long_value + short_value
 
-    
     def calculate_total_value(self):
         market_value_long = 0
         market_value_short = 0
@@ -108,7 +108,6 @@ class Portfolio:
                 )  # Value of short position
 
         return self.cash + market_value_long - market_value_short
-
 
     def calculate_total_return(self) -> float:
         final_value = self.calculate_total_value()

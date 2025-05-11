@@ -15,7 +15,7 @@ class Order:
 
 @dataclass
 class OrderResult:
-    cloid: str
+    cloid: Optional[str]
     oid:str
     status: str
     side: str
@@ -27,12 +27,12 @@ class OrderResult:
     message: Optional[str] = None
 
 
-SIDEMAP = {
-    "BUY".casefold(): "BUY",
-    "SELL".casefold(): "SELL",
-    "SHORT".casefold(): "SELL",
-    "COVER".casefold(): "BUY"
-}
+# SIDEMAP = {
+#     "BUY".casefold(): "BUY",
+#     "SELL".casefold(): "SELL",
+#     "SHORT".casefold(): "SELL",
+#     "COVER".casefold(): "BUY"
+# }
 
 class ExchangeInterface(ABC):
     """Abstract base class for exchange integrations"""

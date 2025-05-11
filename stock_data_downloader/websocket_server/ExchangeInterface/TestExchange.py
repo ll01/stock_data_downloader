@@ -51,8 +51,7 @@ class TestExchange(ExchangeInterface):
             # Generate a unique order ID
             order_id = str(uuid.uuid4())
 
-            # Normalize the side (BUY, SELL, SHORT, or COVER)
-            # side = SIDEMAP.get(order.side.casefold(), order.side)
+            # Normalize the side (BUY, SELL)
             side = order.side.casefold()
 
             # Execute the order on the portfolio
@@ -62,28 +61,28 @@ class TestExchange(ExchangeInterface):
                     success = self.portfolio.buy(
                         order.symbol, order.quantity, order.price
                     )
-                    status = "FILLED"
                 elif side == "SELL".casefold():
                     success = self.portfolio.sell(
                         order.symbol, order.quantity, order.price
                     )
                     status = "FILLED"
+                # else:
+                #     # Handle SHORT and COVER through the portfolio methods
+                #     if side == "SHORT".casefold():
+                #         self.portfolio.short(order.symbol, order.quantity, order.price)
+                #         success = True
+                #         status = "FILLED"
+                #     elif side == "COVER".casefold():
+                #         success = self.portfolio.sell(
+                #             order.symbol, order.quantity, order.price
+                #         )  # Uses sell to cover short positions
+                #         status = "FILLED"
                 else:
-                    # Handle SHORT and COVER through the portfolio methods
-                    if side == "SHORT".casefold():
-                        self.portfolio.short(order.symbol, order.quantity, order.price)
-                        success = True
-                        status = "FILLED"
-                    elif side == "COVER".casefold():
-                        success = self.portfolio.sell(
-                            order.symbol, order.quantity, order.price
-                        )  # Uses sell to cover short positions
-                        status = "FILLED"
-                    else:
-                        logger.error(f"Unknown order side: {order.side}")
-                        status = "REJECTED"
-                if not success:
+                    logger.error(f"Unknown order side: {order.side}")
                     status = "REJECTED"
+                    
+                status = "FILLED" if success else "REJECTED"
+                if not success:
                     logging.error(f"{order} failed to execute")
 
                 # Store the order for reference

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Callable, List, Dict, Any, Optional
 import eth_account
 from hyperliquid.utils import constants
@@ -13,7 +14,6 @@ from eth_account.signers.local import LocalAccount
 from hyperliquid.websocket_manager import WebsocketManager
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
-    SIDEMAP,
     ExchangeInterface,
     Order,
     OrderResult,
@@ -122,7 +122,7 @@ class HyperliquidExchange(ExchangeInterface):
 
         for order in orders:
             # Build the Hyperliquid request payload
-            is_buy = SIDEMAP[order.side] == "BUY".casefold()
+            is_buy = order.side == "BUY".casefold()
             quantity = self._round_ammounts(order.quantity, order.symbol, is_quantity=True)
             price = self._round_ammounts(order.price, order.symbol, is_quantity=False)
            
@@ -169,54 +169,61 @@ class HyperliquidExchange(ExchangeInterface):
 
     
     
-    def place_order_standardized(self, raw: Dict, cloid: Cloid) -> OrderResult:
+    def place_order_standardized(self, raw: Dict, cloid: Optional[Cloid]) -> OrderResult:
         """
-        Places an order and returns an OrderResult.
-        If fetch_status is True, does an extra query_order_by_oid() to get the latest fill.
+        Converts the raw Hyperliquid order response to a standardized OrderResult.
+        Optionally queries latest status if configured.
         """
-        
         success = raw.get("status") == "ok"
         status_data = raw["response"]["data"]["statuses"][0]
-        
-        # Determine which status key is present: resting vs filled vs cancelling etc.
+
+        # Determine which status key is present: e.g., 'resting', 'filled'
         key = next(iter(status_data))
         details = status_data[key]
-        
-        oid = str(details["oid"])
-        qty = float(details.get("totalSz", details.get("sz", 0)))
-        avg_px = float(details.get("avgPx", -1))  # fallback to submitted price
-        
-        if self.fetch_status_after_order and success:
-            order_info = self._exchange.info.query_order_by_cloid(self.wallet_address, cloid)
-            metadata = order_info.get("order")
-            timestamp = datetime.fromtimestamp(metadata["statusTimestamp"]/1000, timezone.utc).isoformat()
-            order_metadata = metadata.get("order",{})
-            symbol = order_metadata.get("coin")
-            # cloid  =order_metadata.get("cloid")
-            size = order_metadata.get("origSz")
-            price = order_metadata.get("limitPx")
-            side = order_metadata.get("side", "").casefold()
-            if side == "A".casefold():
-                side = "sell"
-            elif side == "B".casefold():
-                side = "buy"
-            else:
-                side = "unknown"
-                logging.warning(f"Unknown side for oid: {oid}" )
 
-           
+        oid: int = details["oid"]
+        qty = float(details.get("totalSz", details.get("sz", 0)))
+        avg_px = float(details.get("avgPx", details.get("limitPx", 0)))
+
+        # Fallback values in case fetch_status_after_order is False or fails
+        symbol = details.get("coin", "unknown")
+        price = avg_px
+        timestamp = datetime.now(timezone.utc).isoformat()
+        side = "unknown"
+
+        if self.fetch_status_after_order and success:
+            try:
+                if cloid:
+                    order_info = self._exchange.info.query_order_by_cloid(self.wallet_address, cloid)
+                else:
+                    order_info = self._exchange.info.query_order_by_oid(self.wallet_address, oid)
         
-        return OrderResult (
-            cloid=cloid.to_raw(),
-            oid=oid,
-            status=status_data[key],
+
+                metadata = order_info.get("order", {})
+                order_metadata = metadata.get("order", {})
+
+                symbol = order_metadata.get("coin", symbol)
+                price = float(order_metadata.get("limitPx", price))
+                side_code = order_metadata.get("side", "").casefold()
+                side = "buy" if side_code == "b" else "sell" if side_code == "a" else "unknown"
+                ts = metadata.get("statusTimestamp")
+                if ts:
+                    timestamp = datetime.fromtimestamp(ts / 1000, timezone.utc).isoformat()
+            except Exception as e:
+                logging.warning(f"Failed to fetch post-order status for oid={oid}: {e}")
+
+        return OrderResult(
+            cloid=cloid.to_raw() if cloid else "",
+            oid=str(oid),
+            status=key,
             price=price,
             quantity=qty,
             symbol=symbol,
-            side=key,
+            side=side,
             success=success,
-            timestamp="",
+            timestamp=timestamp,
         )
+
            
 
     async def get_balance(self) -> Dict[str, float]:
@@ -375,3 +382,40 @@ class HyperliquidExchange(ExchangeInterface):
                 # Verify if this is the correct way to round price on Hyperliquid
                 decimals = max_decimals - self.sz_decimals.get(ticker, 0)
                 return round(float(f"{value:.5g}"), decimals)
+
+
+class RobustWebsocketClient:
+    def __init__(self, base_url, subscribe_payload, callback, reconnect_interval=5):
+        self.base_url = base_url
+        self.subscribe_payload = subscribe_payload
+        self.callback = callback
+        self.reconnect_interval = reconnect_interval
+        self._ws = None
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._run_loop, name="ws_reconnector", daemon=True)
+        self._thread.start()
+
+    def _run_loop(self):
+        while self._running:
+            try:
+                self._ws = WebsocketManager(self.base_url)
+                self._ws.start()
+                sub_id = self._ws.subscribe(self.subscribe_payload, callback=self.callback)
+                logging.info(f"[WS] Subscribed with ID {sub_id}")
+                while self._ws.is_alive():
+                    time.sleep(1)
+                raise Exception("WebSocket thread died")
+            except Exception as e:
+                logging.warning(f"[WS] Disconnected or failed: {e}. Reconnecting in {self.reconnect_interval}s")
+                time.sleep(self.reconnect_interval)
+
+    def stop(self):
+        self._running = False
+        if self._ws:
+            self._ws.stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join()

@@ -74,7 +74,7 @@ class WebSocketServer:
         self.realtime_task = None  # Store task reference for cancellation
         self.simulation_running = False
         self._order_subscription_id: Optional[int] = None
-        self.loop = asyncio.get_event_loop()
+        self.loop = None
 
         self.portfolio = Portfolio()
 
@@ -152,21 +152,20 @@ class WebSocketServer:
 
     async def run_realtime(self):
         """Run the realtime price generator and broadcast to all clients."""
+        loop = asyncio.get_running_loop()
 
         def on_price_update(price_batch: Dict[str, Union[str, float]]):
             try:
                 if not self.connection_manager.connections:
-                    # logger.info("No clients connected, pausing realtime updates")
                     return
                 print(price_batch)
                 asyncio.run_coroutine_threadsafe(
-                self.connection_manager.broadcast_to_all(
-                    type="price_update",
-                    payload=[price_batch]
-                ),
-                self.loop
-            )
-
+                    self.connection_manager.broadcast_to_all(
+                        type="price_update",
+                        payload=[price_batch]
+                    ),
+                    loop
+                )
             except asyncio.CancelledError:
                 logger.info("Realtime task was cancelled")
             except Exception as e:
@@ -288,8 +287,21 @@ class WebSocketServer:
             except Exception as e:
                 logger.error(f"Failed to subscribe to order updates: {e}")
 
+    async def shutdown(self):
+        """Gracefully shutdown the server"""
+        if self.realtime_task:
+            self.realtime_task.cancel()
+            try:
+                await self.realtime_task
+            except asyncio.CancelledError:
+                pass
+        await self.stop()
+
     async def stop(self):
-        await self.exchange.unsubscribe_to_orders([])
+        if self._order_subscription_id:
+            # Convert subscription ID to string if needed by exchange
+            await self.exchange.unsubscribe_to_orders([str(self._order_subscription_id)])
+            self._order_subscription_id = None
 
 
 async def start_simulation_server(

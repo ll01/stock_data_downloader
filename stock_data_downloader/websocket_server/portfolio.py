@@ -12,6 +12,7 @@ class Portfolio:
         self.short_positions = {}  # {ticker: (quantity, entry_price)}
         self.trade_history = []
         self.initial_cash = initial_cash
+        self.current_prices = {}  # Track current market prices
 
     def buy(self, ticker: str, quantity: float, price: float) -> bool:
         cost = quantity * price

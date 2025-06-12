@@ -33,3 +33,4 @@ stock_data_downloader = "stock_data_downloader.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = "."

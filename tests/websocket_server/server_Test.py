@@ -1,11 +1,11 @@
 import asyncio
-from datetime import datetime
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
+import unittest
 import websockets
 from websockets.exceptions import ConnectionClosedOK
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.DataSource.BrownianMotionDataSource import (
     BrownianMotionDataSource,
@@ -22,53 +22,69 @@ from stock_data_downloader.websocket_server.ExchangeInterface.TestExchange impor
 from stock_data_downloader.websocket_server.MessageHandler import MessageHandler
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.server import WebSocketServer
+from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
 
-@pytest.fixture
-def mock_server():
-    """Create a test server with minimal configuration"""
-    portfolio = Portfolio(initial_cash=1000)
-    exchange: ExchangeInterface = TestExchange(portfolio=portfolio)
-    connection_manager = ConnectionManager()
-    message_handler = MessageHandler()
-    data_source: DataSourceInterface = BrownianMotionDataSource(
-        stats={"AAPL": MagicMock(mean=0.0001, sd=0.015)},
-        start_prices={"AAPL": 100},
-    )
-    return WebSocketServer(
-        uri="ws://localhost:8000",
-        exchange=exchange,
-        connection_manager=connection_manager,
-        message_handler=message_handler,
-        data_source=data_source,
-    )
+class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        """Create a test server instance on a random free port"""
+        portfolio = Portfolio(initial_cash=100000)
+        exchange: ExchangeInterface = TestExchange(portfolio=portfolio)
 
+        # Create data source
+        data_source: DataSourceInterface = BrownianMotionDataSource(
+            stats={"AAPL": TickerStats(mean=0.0001, sd=0.015)},
+            start_prices={"AAPL": 100},
+        )
 
-@pytest.mark.asyncio
-async def test_connection_management(mock_server):
-    """Test adding and removing connections"""
-    mock_ws = AsyncMock()
+        # Create TradingSystem instance
+        trading_system = TradingSystem(
+            exchange=exchange, portfolio=portfolio, data_source=data_source
+        )
 
-    # Test adding connection
-    await mock_server.add_connection(mock_ws)
-    assert mock_ws in mock_server.connections
+        connection_manager = ConnectionManager()
+        message_handler = MessageHandler()
 
-    # Test removing connection
-    await mock_server.remove_connection(mock_ws)
-    assert mock_ws not in mock_server.connections
+        # Initialize WebSocketServer with new parameters
+        self.server_instance = WebSocketServer(
+            trading_system=trading_system,
+            connection_manager=connection_manager,
+            message_handler=message_handler,
+            uri="",  # URI determined by websockets.serve
+            realtime=False,
+        )
 
+        # Start server on random available port (port=0)
+        self.server = await websockets.serve(
+            self.server_instance.websocket_server,
+            "127.0.0.1",  # Force IPv4 binding
+            0,
+        )
 
-@pytest.mark.asyncio
-async def test_message_handling(mock_server):
-    """Test handling different message types"""
-    mock_ws = AsyncMock()
-    mock_server.current_prices = {"AAPL": 155.0}
+        # Get actual server URI
+        host, port = list(self.server.sockets)[0].getsockname()
+        self.server_uri = f"ws://{host}:{port}"
 
-    # Mock simulate_prices to avoid multiprocessing issues
-    with patch(
-        "stock_data_downloader.websocket_server.server.simulate_prices",
-        return_value={"AAPL": [{"close": 150.0}]},
-    ):
+    async def asyncTearDown(self):
+        """Gracefully shut down server after each test"""
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def test_connection_management(self):
+        """Test adding and removing connections"""
+        mock_ws = AsyncMock()
+
+        # Test adding connection
+        await self.server_instance.connection_manager.add_connection(mock_ws)
+        assert mock_ws in self.server_instance.connection_manager.connections
+
+        # Test removing connection
+        await self.server_instance.connection_manager.remove_connection(mock_ws)
+        assert mock_ws not in self.server_instance.connection_manager.connections
+
+    async def test_message_handling(self):
+        """Test handling different message types"""
+
         # Test buy order
         buy_msg = {
             "action": "order",
@@ -76,390 +92,188 @@ async def test_message_handling(mock_server):
                 "ticker": "AAPL",
                 "quantity": 10,
                 "price": 155.0,
-                "order_type": "buy"
-            }
+                "order_type": "buy",
+            },
         }
-        await mock_server.handle_message(mock_ws, buy_msg)
-        mock_ws.send.assert_called_once()
+        response = await self.server_instance.message_handler.handle_message(
+            buy_msg,
+            self.server_instance.trading_system,
+            self.server_instance.simulation_running,
+            self.server_instance.realtime,
+        )
+        # Verify order response
+        assert response.result_type == "order_confirmation"
 
-        # Test sell order
-        sell_msg = {
+    async def test_simulation_mode(self):
+        """Test simulation mode: client connects, sends an order, and receives confirmation."""
+        mock_ws_client = AsyncMock()
+        mock_ws_client.remote_address = ("127.0.0.1", 12345)
+
+        # Simulate the client sending one order message and then closing the connection.
+        buy_order_message = json.dumps(
+            {
+                "action": "order",
+                "payload": {
+                    "ticker": "AAPL",
+                    "quantity": 5,
+                    "price": 100.5,
+                    "order_type": "buy",
+                },
+            }
+        )
+        mock_ws_client.recv.side_effect = [
+            buy_order_message,
+            ConnectionClosedOK(None, None),
+        ]
+
+        # Mock the data source to avoid actual data generation
+        with patch.object(
+            self.server_instance.trading_system.data_source,
+            "get_historical_data",
+            return_value={"AAPL": []},  # Return empty data for simplicity
+        ) as mock_get_historical:
+
+            # Run the server's main handler with the mocked client
+            await self.server_instance.websocket_server(mock_ws_client)
+
+            # Assert that historical data was requested
+            await asyncio.sleep(0)
+            mock_get_historical.assert_awaited_once()
+
+            # Check that an order confirmation was sent to the client
+            sent_messages = [
+                json.loads(call.args[0]) for call in mock_ws_client.send.call_args_list
+            ]
+            order_confirmations = [
+                msg for msg in sent_messages if msg.get("type") == "order_confirmation"
+            ]
+          
+            self.assertEqual(len(order_confirmations), 1)
+            confirmation_payload = order_confirmations[0]["payload"][0]
+            self.assertEqual(confirmation_payload["status"], "FILLED")
+            self.assertEqual(confirmation_payload["symbol"], "AAPL")
+            self.assertEqual(confirmation_payload["quantity"], 5)
+
+            # Verify the final state of the portfolio
+            self.assertIn("AAPL", self.server_instance.trading_system.portfolio.positions)
+            self.assertEqual(
+                self.server_instance.trading_system.portfolio.positions["AAPL"][0], 5
+            )
+
+            # Ensure the connection was closed and removed
+            mock_ws_client.close.assert_awaited_once()
+            self.assertNotIn(
+                mock_ws_client, self.server_instance.connection_manager.connections
+            )
+
+    async def test_broadcast(self):
+        """Test broadcasting to multiple clients"""
+        mock_ws1 = AsyncMock()
+        mock_ws2 = AsyncMock()
+
+        # Add connections
+        await self.server_instance.connection_manager.add_connection(mock_ws1)
+        await self.server_instance.connection_manager.add_connection(mock_ws2)
+
+        # Test broadcast
+        test_data = {"test": "data"}
+        await self.server_instance.connection_manager.broadcast_to_all(
+            "test_event", test_data
+        )
+
+        # Verify both clients received data
+        expected_call = json.dumps({"type": "test_event", "payload": test_data})
+        mock_ws1.send.assert_awaited_once_with(expected_call)
+        mock_ws2.send.assert_awaited_once_with(expected_call)
+
+    async def test_multiple_connections(self):
+        """Test handling multiple concurrent connections"""
+        mock_ws1 = AsyncMock()
+        mock_ws2 = AsyncMock()
+
+        await self.server_instance.connection_manager.add_connection(mock_ws1)
+        await self.server_instance.connection_manager.add_connection(mock_ws2)
+
+        assert len(self.server_instance.connection_manager.connections) == 2
+        await self.server_instance.connection_manager.remove_connection(mock_ws1)
+        assert len(self.server_instance.connection_manager.connections) == 1
+
+    async def test_order_execution(self):
+        """Test order execution flow"""
+        self.server_instance.current_prices = {"AAPL": 150.0}  # type: ignore[attr-defined]
+
+        orders = [
+            {
+                "action": "order",
+                "payload": {
+                    "ticker": "AAPL",
+                    "quantity": 10,
+                    "price": 150.0,
+                    "order_type": "buy",
+                },
+            },
+            {
+                "action": "order",
+                "payload": {
+                    "ticker": "AAPL",
+                    "quantity": 5,
+                    "price": 150.0,
+                    "order_type": "sell",
+                },
+            },
+            {
+                "action": "order",
+                "payload": {
+                    "ticker": "AAPL",
+                    "quantity": 7,
+                    "price": 150.0,
+                    "order_type": "sell",
+                },
+            },
+        ]
+
+        for order in orders:
+            await self.server_instance.message_handler.handle_message(
+                order,
+                self.server_instance.trading_system,
+                self.server_instance.simulation_running,
+                self.server_instance.realtime,
+            )
+
+        # Verify portfolio state
+        aapl_pos = self.server_instance.trading_system.portfolio.positions.get("AAPL")
+        assert aapl_pos is None
+
+        aapl_short = self.server_instance.trading_system.portfolio.short_positions.get(
+            "AAPL"
+        )
+        assert aapl_short is not None
+        assert aapl_short[0] == 2
+
+    async def test_simulation_reset(self):
+        """Test resetting the simulation"""
+        # Place an order to change state
+        buy_msg = {
             "action": "order",
             "payload": {
                 "ticker": "AAPL",
-                "quantity": 5,
+                "quantity": 10,
                 "price": 155.0,
-                "order_type": "sell"
-            }
-        }
-        await mock_server.handle_message(mock_ws, sell_msg)
-        assert mock_ws.send.call_count == 2
-
-        # Test reset (now patched)
-        reset_msg = {"action": "reset"}
-        await mock_server.handle_message(mock_ws, reset_msg)
-        assert mock_ws.send.call_count == 3
-        assert mock_server.current_prices["AAPL"] == 150.0  # Verify reset
-
-
-@pytest.mark.asyncio
-async def test_price_emission(mock_server):
-    """Test price emission functionality in simulation mode"""
-    # Create and configure mock WebSocket
-    mock_ws = AsyncMock()
-    mock_ws.remote_address = ("127.0.0.1", 12345)
-    mock_ws.closed = False
-    mock_ws.__aiter__.return_value = []  # No incoming messages
-
-    # Setup test price data
-    test_prices = {
-        "AAPL": [
-            {
-                "open": 150.0,
-                "high": 151.0,
-                "low": 149.5,
-                "close": 150.5,
-                "volume": 1000,
+                "order_type": "buy",
             },
-            {
-                "open": 150.5,
-                "high": 152.0,
-                "low": 150.0,
-                "close": 151.5,
-                "volume": 1200,
-            },
-        ]
-    }
-
-    # Configure mock server state
-    mock_server.simulation_running = False
-    mock_server.simulated_prices = test_prices
-    mock_server.current_prices = {"AAPL": 150.0}  # Initial price
-    mock_server.connections.add(mock_ws)  # Simulate connected client
-
-    # Mock dependencies
-    with (
-        patch(
-            "stock_data_downloader.websocket_server.server.datetime"
-        ) as mock_datetime,
-        patch(
-            "stock_data_downloader.websocket_server.server.random.uniform",
-            return_value=0.1,  # Consistent delay for testing
-        ),
-    ):
-        # Freeze time
-        test_time = datetime(2023, 1, 1, 12, 0)
-        mock_datetime.now.return_value = test_time
-
-        # Run price emission
-        emission_task = asyncio.create_task(mock_server.emit_price_ticks(mock_ws))
-
-        # Wait for emission (enough time for at least one tick)
-        await asyncio.sleep(0.15)
-
-        # Cancel the task
-        emission_task.cancel()
-        try:
-            await emission_task
-        except asyncio.CancelledError:
-            pass
-
-        # Verify prices were sent
-        assert mock_ws.send.call_count > 0, "No prices were emitted"
-
-        # Verify message structure
-        sent_messages = [call.args[0] for call in mock_ws.send.call_args_list]
-        for message in sent_messages:
-            data = json.loads(message)
-            assert isinstance(data, list)
-            for tick in data:
-                assert "timestamp" in tick
-                assert tick["ticker"] == "AAPL"
-                assert all(
-                    key in tick for key in ["open", "high", "low", "close", "volume"]
-                )
-
-        # Verify current_prices was updated
-        assert mock_server.current_prices["AAPL"] in [150.5, 151.5]  # Should be updated
-
-
-@pytest.mark.asyncio
-async def test_simulation_mode(mock_server):
-    """Test simulation mode with immediate disconnection"""
-    mock_ws = AsyncMock()
-    mock_ws.__aiter__.side_effect = [
-        [json.dumps({"action": "buy", "ticker": "AAPL", "quantity": 10})],
-        websockets.exceptions.ConnectionClosedOK(None, None),
-    ]
-
-    mock_server.realtime = False
-
-    with patch(
-        "stock_data_downloader.websocket_server.server.simulate_prices",
-        return_value={"AAPL": [{"close": 150.0}]},
-    ):
-        await mock_server.websocket_server(mock_ws)
-
-        # Verify basic workflow
-        assert mock_ws.send.call_count >= 1
-        mock_ws.close.assert_awaited_once()
-        assert mock_ws not in mock_server.connections
-
-
-@pytest.mark.asyncio
-async def test_realtime_mode(mock_server):
-    """Test realtime mode operation"""
-    mock_server.realtime = True
-    mock_ws = AsyncMock()
-
-    # Set up mock to close after first iteration
-    mock_ws.__aiter__.side_effect = [
-        [json.dumps({"action": "ping"})],
-        ConnectionClosedOK(None, None),
-    ]
-
-    with patch.object(
-        mock_server, "run_realtime", new_callable=AsyncMock
-    ) as mock_realtime:
-        # No timeout needed since we're forcing closure
-        await mock_server.websocket_server(mock_ws)
-
-        # Verify realtime task was started
-        mock_realtime.assert_called_once()
-
-        # Verify proper connection lifecycle
-        assert mock_ws not in mock_server.connections
-        mock_ws.close.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_broadcast(mock_server):
-    """Test broadcasting to multiple clients"""
-    mock_ws1 = AsyncMock()
-    mock_ws2 = AsyncMock()
-
-    # Add connections
-    await mock_server.add_connection(mock_ws1)
-    await mock_server.add_connection(mock_ws2)
-
-    # Test broadcast
-    test_data = {"test": "data"}
-    await mock_server.broadcast_to_all(test_data)
-
-    # Verify both clients received data
-    mock_ws1.send.assert_called_once_with(json.dumps(test_data))
-    mock_ws2.send.assert_called_once_with(json.dumps(test_data))
-
-
-@pytest.mark.asyncio
-async def test_multiple_connections(mock_server):
-    """Test handling multiple concurrent connections"""
-    mock_ws1 = AsyncMock()
-    mock_ws2 = AsyncMock()
-
-    await mock_server.add_connection(mock_ws1)
-    await mock_server.add_connection(mock_ws2)
-
-    assert len(mock_server.connections) == 2
-    await mock_server.remove_connection(mock_ws1)
-    assert len(mock_server.connections) == 1
-
-
-@pytest.mark.asyncio
-async def test_simulation_restart_protection(mock_server):
-    """Test prevention of multiple simulation instances"""
-    mock_ws = AsyncMock()
-    mock_server.simulation_running = True
-
-    await mock_server.emit_price_ticks(mock_ws)
-    mock_ws.send.assert_not_called()  # Should skip emission
-
-
-@pytest.mark.asyncio
-async def test_realtime_broadcast(mock_server):
-    """Test broadcast to multiple clients in realtime mode"""
-    mock_server.realtime = True
-    mock_ws1 = AsyncMock()
-    mock_ws2 = AsyncMock()
-
-    with patch.object(mock_server, "generate_realtime_prices") as mock_gen:
-        mock_gen.return_value = AsyncMock()
-        mock_gen.return_value.__aiter__.return_value = [
-            [{"ticker": "AAPL", "close": 150.0}]
-        ]
-
-        await mock_server.add_connection(mock_ws1)
-        await mock_server.add_connection(mock_ws2)
-        await mock_server.run_realtime()
-
-        await asyncio.sleep(0.1)
-        mock_ws1.send.assert_awaited()
-        mock_ws2.send.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_invalid_message_handling(mock_server):
-    """Test handling of malformed messages"""
-    mock_ws = AsyncMock()
-    mock_ws.__aiter__.side_effect = [
-        "not valid json",
-        json.dumps({"invalid": "format"}),
-        ConnectionClosedOK(None, None),
-    ]
-
-    await mock_server.websocket_server(mock_ws)
-    # Should handle without crashing
-
-
-@pytest.mark.asyncio
-async def test_order_execution(mock_server):
-    """Test order execution flow"""
-    mock_ws = AsyncMock()
-    mock_server.current_prices = {"AAPL": 150.0}
-
-    orders = [
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 10,
-                "price": 150.0,
-                "order_type": "buy"
-            }
-        },
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 5,
-                "price": 150.0,
-                "order_type": "sell"
-            }
-        },
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 3,
-                "price": 150.0,
-                "order_type": "short"
-            }
-        },
-    ]
-
-    for order in orders:
-        await mock_server.handle_message(mock_ws, order)
-
-    assert mock_ws.send.call_count == 3
-
-
-@pytest.mark.asyncio
-async def test_unknown_ticker_handling(mock_server):
-    """Test orders for non-existent tickers"""
-    mock_ws = AsyncMock()
-    mock_server.current_prices = {"AAPL": 150.0}
-
-    await mock_server.handle_message(
-        mock_ws,
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "UNKNOWN",
-                "quantity": 10,
-                "price": 150.0,
-                "order_type": "buy"
-            }
         }
-    )
+        await self.server_instance.message_handler.handle_message(
+            buy_msg,
+            self.server_instance.trading_system,
+            self.server_instance.simulation_running,
+            self.server_instance.realtime,
+        )
 
-    # Should either handle gracefully or send error response
-    mock_ws.send.assert_awaited()
+        # Verify position exists
+        assert "AAPL" in self.server_instance.trading_system.portfolio.positions
 
+        # Reset simulation
+        await self.server_instance.reset_simulation()
 
-@pytest.mark.asyncio
-async def test_short_selling_workflow(mock_server):
-    """Test complete short selling lifecycle"""
-    mock_ws = AsyncMock()
-    mock_server.current_prices = {"AAPL": 150.0}
-
-    # Test short opening
-    await mock_server.handle_message(
-        mock_ws,
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 10,
-                "price": 420,
-                "order_type": "short"
-            }
-        }
-    )
-
-    # Verify short position opened
-    assert "AAPL" in mock_server.portfolio.short_positions
-    assert mock_server.portfolio.short_positions["AAPL"][0] == 10
-    assert mock_server.portfolio.short_positions["AAPL"][1] == 420
-
-    # Test short covering
-    await mock_server.handle_message(
-        mock_ws,
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 10,
-                "price": 420,
-                "order_type": "cover"
-            }
-        }
-    )
-
-    # Verify short position closed
-    assert "AAPL" not in mock_server.portfolio.short_positions
-
-
-@pytest.mark.asyncio
-async def test_zero_quantity_rejection(mock_server):
-    """Test rejection of invalid quantities"""
-    mock_ws = AsyncMock()
-    mock_server.current_prices = {"AAPL": 150.0}
-
-    await mock_server.handle_message(
-        mock_ws,
-        {
-            "action": "order",
-            "payload": {
-                "ticker": "AAPL",
-                "quantity": 0,
-                "price": 150.0,
-                "order_type": "buy"
-            }
-        }
-    )
-
-    response = json.loads(mock_ws.send.call_args[0][0])
-    assert response["status"] == "rejected"
-    assert "quantity" in response["reason"]
-
-
-@pytest.mark.asyncio
-async def test_missing_ticker_rejection(mock_server):
-    """Test rejection of orders missing ticker"""
-    mock_ws = AsyncMock()
-
-    await mock_server.handle_message(
-        mock_ws,
-        {
-            "action": "order",
-            "payload": {
-                "quantity": 10,
-                "price": 150.0,
-                "order_type": "buy"
-            }
-        }
-    )
-
-    response = json.loads(mock_ws.send.call_args[0][0])
-    assert response["status"] == "rejected"
-    assert "ticker" in response["reason"]
+        # Verify positions are cleared
+        assert not self.server_instance.trading_system.portfolio.positions

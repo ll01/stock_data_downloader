@@ -15,13 +15,14 @@ from hyperliquid.websocket_manager import WebsocketManager
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
-    Order,
-    OrderResult,
 )
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
+from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
 from stock_data_downloader.websocket_server.thread_cancel_helper import (
     _async_raise,
     find_threads_by_name,
 )
+from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 
 # Define a directory for saving mappings
@@ -40,6 +41,9 @@ class HyperliquidExchange(ExchangeInterface):
         if "wallet_address" not in self.config:
             raise ValueError("wallet_addresss must be provided in config")
         self.wallet_address  = self.config["wallet_address"]
+        
+        # Initialize portfolio
+        self._portfolio = Portfolio(initial_cash=0)
 
 
 
@@ -69,6 +73,11 @@ class HyperliquidExchange(ExchangeInterface):
 
     def _initialize_exchange(self) -> Exchange:
         return Exchange(wallet=self.account, base_url=self.base_url)
+        
+    @property
+    def portfolio(self) -> Portfolio:
+        """Return the portfolio associated with this exchange"""
+        return self._portfolio
 
     def _initialize_metadata(self):
         return self._exchange.info.meta()
@@ -150,6 +159,21 @@ class HyperliquidExchange(ExchangeInterface):
 
             except Exception as exc:
                 logging.error(f"[place_order] failed for cloid={order.cloid}: {exc}", exc_info=True)
+                
+                # For failed orders, set position_change and cash_impact to 0
+                result = OrderResult(
+                    cloid=order.cloid or "",
+                    oid="",
+                    status="error",
+                    side=order.side,
+                    price=price,
+                    quantity=quantity,
+                    symbol=order.symbol,
+                    success=False,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    message=str(exc),
+                )
+                output.append(result)
 
                 # Return a “failure” OrderResult for this one
                 output.append(OrderResult(

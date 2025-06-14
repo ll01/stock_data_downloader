@@ -1,8 +1,9 @@
 import asyncio
 import json
+from typing import Dict
 import unittest
 import websockets
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosed
 
 # Assuming your project structure allows these imports
 from stock_data_downloader.data_processing.TickerStats import TickerStats
@@ -16,102 +17,100 @@ from stock_data_downloader.websocket_server.ExchangeInterface.TestExchange impor
 from stock_data_downloader.websocket_server.MessageHandler import MessageHandler
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.server import WebSocketServer
+from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
 
 class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
     """
     Integration tests for the WebSocketServer.
-
-    These tests start a server instance in the background of the same event loop
-    and connect to it as a client to verify end-to-end functionality without deadlocks.
     """
 
     async def asyncSetUp(self):
-        """
-        Set up a WebSocket server instance on a random free port before each test.
-        """
-        # 1. Define mock data and dependencies for the simulation
-        stats = {
-            "AAPL": TickerStats(mean=0.0001, sd=0.015),
-            "GOOG": TickerStats(mean=0.0002, sd=0.02),
-        }
-        start_prices = {"AAPL": 150.0, "GOOG": 2800.0}
+        """Set up a WebSocket server on a random free port before each test."""
+        stats = {"AAPL": TickerStats(mean=0.0001, sd=0.015)}
+        start_prices = {"AAPL": 150.0}
         portfolio = Portfolio(initial_cash=100000.0)
         data_source = BrownianMotionDataSource(
-            stats=stats, start_prices=start_prices, timesteps=252, seed=42
+            stats=stats, start_prices=start_prices, timesteps=50, seed=42 # Reduced timesteps for faster tests
         )
         exchange = TestExchange(portfolio=portfolio)
-
-        # 2. Instantiate the WebSocketServer with its components
+        trading_system = TradingSystem(
+            data_source=data_source, exchange=exchange, portfolio=portfolio
+        )
+        
         self.ws_server_instance = WebSocketServer(
-            data_source=data_source,
-            exchange=exchange,
+            trading_system=trading_system,
             connection_manager=ConnectionManager(),
             message_handler=MessageHandler(),
-            uri="",  # The URI will be determined by websockets.serve
+            uri="",
             realtime=False,
         )
 
-        # 3. Start the server on a random available port (port=0) forcing IPv4
         self.server = await websockets.serve(
-            self.ws_server_instance.websocket_server,
-            "127.0.0.1",  # Force IPv4 binding
-            0,
+            self.ws_server_instance.websocket_server, "127.0.0.1", 0
         )
 
-        # 4. Get the actual URI (IPv4 format is simple)
         host, port = list(self.server.sockets)[0].getsockname()
         self.server_uri = f"ws://{host}:{port}"
-        print(f"Test server started on {self.server_uri}")
 
     async def asyncTearDown(self):
-        """
-        Gracefully shut down the server after each test.
-        """
-        print(f"Closing test server on {self.server_uri}")
+        """Gracefully shut down the server after each test."""
         self.server.close()
         await self.server.wait_closed()
-        print("Test server closed.")
 
     async def test_successful_trade_message(self):
         """
-        Tests sending a valid trade order and receiving a successful 'executed' confirmation.
+        Tests sending a valid trade order and receiving a successful confirmation
+        after processing any initial history messages.
         """
         async with websockets.connect(self.server_uri) as websocket:
             trade_message = {
-                "action": "short",
-                "ticker": "AAPL",
-                "quantity": 10,
-                "price": 150,
-                "metadata": {"strategy": "pairs_trading"},
+                "action": "order",
+                "payload": {
+                    "ticker": "AAPL",
+                    "quantity": 10,
+                    "price": 150,
+                    "order_type": "buy",
+                },
             }
-
             await websocket.send(json.dumps(trade_message))
-            response_raw = await websocket.recv()
-            print(f"Received response: {response_raw}")
 
-            # Parse and validate the confirmation
-            response_data = json.loads(response_raw)
-            self.assertEqual(response_data.get("status"), "executed")
-            self.assertEqual(
-                response_data.get("action"), "SHORT"
-            )  # Server uppercases the action
-            self.assertEqual(response_data.get("ticker"), "AAPL")
-            self.assertEqual(response_data.get("payload", {}).get("quantity"), 10)
+            order_confirmations: Dict  = {}
+            try:
+                # Use a timeout for the entire message-finding process
+                async with asyncio.timeout(5.0):
+                    # CORRECTED: This properly loops over all incoming messages
+                    async for message_raw in websocket:
+                        message_data = json.loads(message_raw)
+                        # If it's the message we want, save it and exit the loop
+                        if message_data.get("type") == "order_confirmation":
+                            order_confirmations = message_data
+                            break
+                        # Otherwise, it's a 'price_history' message; the loop continues
+            except TimeoutError:
+                self.fail("Test timed out waiting for the order confirmation")
 
-    # async def test_invalid_json_message_closes_connection(self):
-    #     """
-    #     Tests that the server closes the connection when it receives an invalid JSON message.
-    #     """
-    #     async with websockets.connect(self.server_uri) as websocket:
-    #         invalid_message = "this is not valid json"
-    #         await websocket.send(invalid_message)
+            # Perform assertions on the captured confirmation message
+            self.assertIsNotNone(order_confirmations, "Did not receive order confirmation")
+            
+            
+            confirmation_payload = order_confirmations["payload"][0]
+            self.assertEqual(confirmation_payload["status"], "FILLED")
+            self.assertEqual(confirmation_payload["symbol"], "AAPL")
+            self.assertEqual(confirmation_payload["quantity"], 10)
 
-    #         # Your server's exception handler closes the connection upon a JSON decode error
-    #         # without sending a final message. Therefore, recv() should raise a ConnectionClosedError.
-    #         with self.assertRaises(ConnectionClosedError):
-    #             await websocket.recv()
-    #         print("Verified that connection was correctly closed by the server.")
+    async def test_invalid_json_message_closes_connection(self):
+        """
+        Tests that the server closes the connection when it receives an invalid JSON message.
+        """
+        async with websockets.connect(self.server_uri) as websocket:
+            invalid_message = "this is not valid json"
+            await websocket.send(invalid_message)
+            
+            # The server should close the connection upon the error.
+            # Awaiting recv() on a closed connection will raise an exception.
+            with self.assertRaises(ConnectionClosed):
+                await websocket.recv()
 
 
 if __name__ == "__main__":

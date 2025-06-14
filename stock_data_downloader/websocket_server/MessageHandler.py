@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Union
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
-    Order,
 )
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
+from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
 RESET_REQUESTED = "reset_requested"
 FINAL_REPORT_REQUESTED = "final_report_requested"
@@ -28,8 +29,7 @@ class MessageHandler:
     async def handle_message(
         self,
         data: Dict[str, Any],
-        exchange: ExchangeInterface,
-        portfolio: Portfolio,
+        trading_system: TradingSystem,
         simulation_running: bool,
         realtime: bool,
     ) -> HandleResult:
@@ -43,12 +43,12 @@ class MessageHandler:
                 logging.warning(
                     "Client requested final report while simulation potentially still running?"
                 )
-            balance_info = await exchange.get_balance()
+            balance_info = await trading_system.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)
             if not realtime:
-                final_value = portfolio.cash
-                total_return = portfolio.calculate_total_return()
-                final_portfolio_state = vars(portfolio)
+                final_value = trading_system.portfolio.cash
+                total_return = trading_system.portfolio.calculate_total_return()
+                final_portfolio_state = vars(trading_system.portfolio)
                 payload = {
                     "final_value": final_value,
                     "total_return": total_return,
@@ -62,7 +62,9 @@ class MessageHandler:
 
             handle_result = HandleResult(result_type="final_report", payload=payload)
         elif action == "order":
-            handle_result = await self.handle_order(data["payload"], exchange)
+            handle_result = await self.handle_order(
+                data["payload"], trading_system
+            )
         elif action == "get_order_status":
             order_id_to_query = data.get("order_id")
             if not order_id_to_query:
@@ -71,7 +73,7 @@ class MessageHandler:
                 )
 
             try:
-                order_status_result = await exchange.get_order_status(
+                order_status_result = await trading_system.exchange.get_order_status(
                     str(order_id_to_query)
                 )
                 handle_result = HandleResult(
@@ -98,7 +100,7 @@ class MessageHandler:
                     data, reason="Missing order_id for cancellation."
                 )
             try:
-                success = await exchange.cancel_order(order_id_to_cancel)
+                success = await trading_system.exchange.cancel_order(order_id_to_cancel)
                 if success:
                     handle_result = HandleResult(
                         result_type="order_cancellation",
@@ -126,18 +128,26 @@ class MessageHandler:
         return handle_result
 
     async def handle_order(
-        self, data: Dict, exchange: ExchangeInterface
+        self, data: Dict, trading_system: TradingSystem
     ) -> HandleResult:
         """Handles incoming messages for placing trade orders."""
         ticker = data.get("ticker", "")
         quantity = data.get("quantity", 0)
         price = data.get("price", 0)
         cloid = data.get("cloid")
-        order_type = data.get("order_type","")
+        order_type = data.get("order_type", "")
         timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        if not ticker or quantity <= 0 or price <= 0:
+        if not ticker:
             return self._send_rejection(
-                data, reason="Invalid order parameters or unknown action."
+                data, reason="Missing required field: ticker", field="ticker"
+            )
+        if quantity <= 0:
+            return self._send_rejection(
+                data, reason="Quantity must be a positive number", field="quantity"
+            )
+        if price <= 0:
+            return self._send_rejection(
+                data, reason="Price must be a positive number", field="price"
             )
 
         orders_to_place = [
@@ -153,7 +163,12 @@ class MessageHandler:
         ]
 
         try:
-            order_placement_result = await exchange.place_order(orders_to_place)
+            order_placement_result = await trading_system.exchange.place_order(
+                orders_to_place
+            )
+            for result in order_placement_result:
+                if result.success:
+                    trading_system.portfolio.apply_order_result(result)
             return HandleResult(
                 result_type="order_confirmation",
                 payload=[vars(result) for result in order_placement_result],
@@ -215,12 +230,13 @@ class MessageHandler:
             payload["portfolio"] = portfolio
         return HandleResult(result_type="trade_execution", payload=payload)
 
-    def _send_rejection(self, data: Dict, reason: str):
-        """Standard rejection format"""
+    def _send_rejection(self, data: Dict, reason: str, field: str | None = None):
+        """Standard rejection format with field-level errors"""
         payload = {
             "status": "rejected",
             "order": data,
             "reason": reason,
             "valid_actions": ["buy", "sell", "reset"],
+            "field": field or "unknown",
         }
         return HandleResult(result_type="trade_rejection", payload=payload)

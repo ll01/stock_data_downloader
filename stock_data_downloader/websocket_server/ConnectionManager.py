@@ -64,18 +64,23 @@ class ConnectionManager:
         if not self.connections:
             return
 
+        tasks = []
         disconnected = set()
 
         for websocket in self.connections:
             try:
-                
-                await self.send(websocket, type, payload)
-            except websockets.exceptions.ConnectionClosed:
-                disconnected.add(websocket)
+                # Create a task for each send operation
+                task = asyncio.create_task(self.send(websocket, type, payload))
+                tasks.append(task)
             except Exception as e:
-                logging.error(f"Error sending to client: {e}")
+                logging.error(f"Error creating send task: {e}")
                 disconnected.add(websocket)
+
+        # Wait for all send tasks to complete
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Remove disconnected clients
         for websocket in disconnected:
-            self.connections.remove(websocket)
+            if websocket in self.connections:
+                await self.remove_connection(websocket)

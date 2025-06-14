@@ -6,9 +6,9 @@ from typing import Callable, Dict, Any, List
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
-    Order,
-    OrderResult,
 )
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
+from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class TestExchange(ExchangeInterface):
+    __test__ = False  # Prevent pytest from collecting this as a test case
     """Test exchange implementation that uses a Portfolio for testing without real market connection"""
 
     def __init__(self, portfolio: Portfolio, simulation_mode: bool = True):
@@ -26,14 +27,19 @@ class TestExchange(ExchangeInterface):
             portfolio: Portfolio instance to use for tracking positions and cash
             simulation_mode: Whether to run in simulation mode (vs live mode)
         """
-        self.portfolio = portfolio
+
         self.simulation_mode = simulation_mode
         self.order_callbacks = {}
         self.active_orders = {}
         self.closed_orders = {}
         self.subscription_id_counter = 0
         self.subscription_callbacks = {}
-        self.loop = asyncio.get_event_loop()
+        self.portfolio = portfolio
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:  # No running event loop
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
 
     async def place_order(self, orders: List[Order]) -> List[OrderResult]:
         """
@@ -51,36 +57,19 @@ class TestExchange(ExchangeInterface):
             # Generate a unique order ID
             order_id = str(uuid.uuid4())
 
-            # Normalize the side (BUY, SELL)
+            # Normalize the side (BUY, SELL, SHORT, COVER)
             side = order.side.casefold()
 
             # Execute the order on the portfolio
             success = False
             try:
-                if side == "BUY".casefold():
-                    success = self.portfolio.buy(
-                        order.symbol, order.quantity, order.price
-                    )
-                elif side == "SELL".casefold():
-                    success = self.portfolio.sell(
-                        order.symbol, order.quantity, order.price
-                    )
+                if side in ["buy", "sell"]:
                     status = "FILLED"
-                # else:
-                #     # Handle SHORT and COVER through the portfolio methods
-                #     if side == "SHORT".casefold():
-                #         self.portfolio.short(order.symbol, order.quantity, order.price)
-                #         success = True
-                #         status = "FILLED"
-                #     elif side == "COVER".casefold():
-                #         success = self.portfolio.sell(
-                #             order.symbol, order.quantity, order.price
-                #         )  # Uses sell to cover short positions
-                #         status = "FILLED"
+                    success = True
                 else:
                     logger.error(f"Unknown order side: {order.side}")
                     status = "REJECTED"
-                    
+
                 status = "FILLED" if success else "REJECTED"
                 if not success:
                     logging.error(f"{order} failed to execute")

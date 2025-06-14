@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import List
 
 
-from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import Order
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.ExchangeInterface.HyperliquidExchange import HyperliquidExchange
 
 async def main():

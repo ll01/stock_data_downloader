@@ -1,30 +1,8 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Callable, Dict, Any, List, Optional
-
-
-@dataclass
-class Order:
-    symbol: str
-    side: str
-    quantity: float
-    price: float
-    timestamp: str
-    cloid: Optional[str] = None
-    args: Optional[Dict] = None
-
-@dataclass
-class OrderResult:
-    cloid: Optional[str]
-    oid:str
-    status: str
-    side: str
-    price: float
-    quantity: float
-    symbol: str
-    success: bool
-    timestamp: str
-    message: Optional[str] = None
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
+from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
+from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 
 # SIDEMAP = {

@@ -1,6 +1,8 @@
 import logging
 from typing import Dict
 
+from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
+
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +14,14 @@ class Portfolio:
         self.short_positions = {}  # {ticker: (quantity, entry_price)}
         self.trade_history = []
         self.initial_cash = initial_cash
-        self.current_prices = {}  # Track current market prices
-
+    
+    def clear_positions(self):
+        """Clear all positions and short positions"""
+        self.cash = self.initial_cash
+        self.positions = {}
+        self.short_positions = {}
+        self.trade_history = []
+    
     def buy(self, ticker: str, quantity: float, price: float) -> bool:
         cost = quantity * price
         success = False
@@ -64,6 +72,17 @@ class Portfolio:
             self.trade_history.append(("SELL", ticker, quantity, price, self.cash))
         else:
             # Open/Increase Short Position
+            if  ticker in self.positions:
+                current_position = self.positions[ticker][0]
+                diff = quantity - current_position
+                if diff > 0:
+                    success = self.sell(ticker, current_position, price)
+                quantity = diff
+                if quantity <= 0:
+                    return success
+        
+
+
             success = True
             self.cash += quantity * price  # Receive cash from short sale
             if ticker in self.short_positions:
@@ -117,3 +136,11 @@ class Portfolio:
             if self.initial_cash
             else 0
         )
+
+    def apply_order_result(self, result: OrderResult):
+        if result.side == "buy":
+            self.buy(result.symbol, result.quantity, result.price)
+        elif result.side == "sell":
+            self.sell(result.symbol, result.quantity, result.price)
+
+        

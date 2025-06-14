@@ -3,7 +3,8 @@ from typing import List, Dict, Any, Callable, Optional
 
 import ccxt.async_support as ccxt
 
-from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import ExchangeInterface, Order  
+from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import ExchangeInterface
+from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order  
 
 
 class CCTXExchange(ExchangeInterface):

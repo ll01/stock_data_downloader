@@ -1,8 +1,7 @@
-
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, AsyncGenerator
 
 # from websockets.asyncio.client import ServerConnection
 
@@ -46,12 +45,4 @@ class DataSourceInterface(ABC):
         else:
             logging.warning("Data source callback not set, cannot notify.")
     
-
-
-# start_prices: Optional[Dict[str, float]] = None,
-#         stats: Optional[Dict[str, TickerStats]] = None,
-#          interval: float = 1.0,
-#         generated_prices_count: int = 252 * 1,  # 1 year of daily data
-        
-#             simulated_prices: Optional[Dict[str, List[Dict[str, float]]]] = None,
-#                seed: Optional[int] = None
+    

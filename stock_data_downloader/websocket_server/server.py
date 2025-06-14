@@ -83,6 +83,10 @@ class WebSocketServer:
                 logger.info(f"Received message: {message}")
 
                 try:
+                    # Implement message size limit (64KB)
+                    if len(message) > 65536:
+                        raise ValueError("Message size exceeds 64KB limit")
+                    
                     requests = json.loads(message)
                     if isinstance(requests, dict):
                         requests = [requests]
@@ -102,10 +106,30 @@ class WebSocketServer:
                                 message_for_client.result_type,
                                 message_for_client.payload,
                             )
-                except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON received: {message}")
+                except (json.JSONDecodeError, ValueError) as e:
+                    # Increment error count using ConnectionManager
+                    error_count = self.connection_manager.increment_error_count(websocket)
+                    logger.error(f"Invalid message: {e} - {message[:100]}")
+                    
+                    if error_count > 5:  # Rate limit threshold
+                        logger.warning(f"Closing connection due to excessive errors: {websocket.remote_address}")
+                        await websocket.close(code=1007, reason="Too many protocol errors")
+                        break
+                    else:
+                        error_type = "invalid_json" if isinstance(e, json.JSONDecodeError) else "invalid_message"
+                        await self.connection_manager.send(
+                            websocket,
+                            "error",
+                            {
+                                "type": error_type,
+                                "message": str(e),
+                                "error_count": error_count,
+                                "max_errors": 5
+                            }
+                        )
                 except Exception as e:
                     logger.exception(f"Error processing message: {e}")
+                    self.connection_manager.increment_error_count(websocket)
                 
         except Exception:
             logger.exception("Unexpected error in message handler")

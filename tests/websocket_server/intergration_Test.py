@@ -99,18 +99,46 @@ class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(confirmation_payload["symbol"], "AAPL")
             self.assertEqual(confirmation_payload["quantity"], 10)
 
-    async def test_invalid_json_message_closes_connection(self):
+    async def test_invalid_json_message_returns_error(self):
         """
-        Tests that the server closes the connection when it receives an invalid JSON message.
+        Tests that the server returns an error response for invalid JSON messages
+        and closes the connection only after repeated errors.
         """
         async with websockets.connect(self.server_uri) as websocket:
+            # First, receive initial price history messages
+            for _ in range(1):  # Adjust based on expected batches
+                response = await websocket.recv()
+                response_data = json.loads(response)
+                self.assertEqual(response_data["type"], "price_history")
+            
+            # First invalid message should return an error
             invalid_message = "this is not valid json"
             await websocket.send(invalid_message)
             
-            # The server should close the connection upon the error.
-            # Awaiting recv() on a closed connection will raise an exception.
-            with self.assertRaises(ConnectionClosed):
-                await websocket.recv()
+            # Should receive an error response
+            response = await websocket.recv()
+            response_data = json.loads(response)
+            self.assertEqual(response_data["type"], "error")
+            self.assertEqual(response_data["payload"]["type"], "invalid_json")
+            self.assertEqual(response_data["payload"]["error_count"], 1)
+            
+            # Second invalid message should increase error count
+            await websocket.send(invalid_message)
+            response = await websocket.recv()
+            response_data = json.loads(response)
+            self.assertEqual(response_data["payload"]["error_count"], 2)
+            
+            # After 5 errors, connection should be closed
+            for i in range(3, 7):
+                await websocket.send(invalid_message)
+                if i < 6:
+                    response = await websocket.recv()
+                    response_data = json.loads(response)
+                    self.assertEqual(response_data["payload"]["error_count"], i)
+                else:
+                    # On the 6th error, connection should be closed
+                    with self.assertRaises(ConnectionClosed):
+                        await websocket.recv()
 
 
 if __name__ == "__main__":

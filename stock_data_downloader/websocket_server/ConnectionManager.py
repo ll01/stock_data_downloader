@@ -10,6 +10,7 @@ class ConnectionManager:
     def __init__(self, max_in_flight_messages: int = 10):
         self.connections: Set[ServerConnection] = set()
         self.connection_queues: Dict[ServerConnection, asyncio.Queue] = {}
+        self.error_counts: Dict[ServerConnection, int] = {}
         self.max_in_flight_messages = max_in_flight_messages
         self.MAX_RETRIES = 10
 
@@ -18,17 +19,20 @@ class ConnectionManager:
         self.connections.add(websocket)
         queue = asyncio.Queue(maxsize=self.max_in_flight_messages)
         self.connection_queues[websocket] = queue
+        self.error_counts[websocket] = 0  # Initialize error count
         # Start a sender task for this connection
         asyncio.create_task(self._sender_task(websocket, queue))
         logging.info(f"New connection from {websocket.remote_address}")
 
     async def remove_connection(self, websocket: ServerConnection):
-         if websocket in self.connections:
-             if websocket in self.connection_queues:
-                  # You might want to await the queue to empty or cancel pending tasks
-                  del self.connection_queues[websocket]
-             self.connections.remove(websocket)
-             logging.info(f"Connection from {websocket.remote_address} closed")
+        if websocket in self.connections:
+            if websocket in self.connection_queues:
+                # You might want to await the queue to empty or cancel pending tasks
+                del self.connection_queues[websocket]
+            if websocket in self.error_counts:
+                del self.error_counts[websocket]
+            self.connections.remove(websocket)
+            logging.info(f"Connection from {websocket.remote_address} closed")
 
     async def _sender_task(self, websocket: ServerConnection, queue: asyncio.Queue):
         while True:
@@ -58,6 +62,16 @@ class ConnectionManager:
             await asyncio.sleep(10)
             retry_count += 1
             await self.send(websocket, type, payload, retry_count)
+
+    def increment_error_count(self, websocket: ServerConnection):
+        if websocket in self.error_counts:
+            self.error_counts[websocket] += 1
+        else:
+            self.error_counts[websocket] = 1
+        return self.error_counts[websocket]
+
+    def get_error_count(self, websocket: ServerConnection) -> int:
+        return self.error_counts.get(websocket, 0)
 
     async def broadcast_to_all(self, type: str, payload: Any = None):
         """Send data to all connected clients."""

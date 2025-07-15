@@ -17,7 +17,7 @@ class HestonModelDataSource(DataSourceInterface):
         self.wait_time = wait_time
 
         self._simulation_task: Optional[asyncio.Task] = None
-        self._callback: Optional[Callable[[str, Any], None]] = None
+        # self._callback: Optional[Callable[[str, Any], None]] = None
         self.simulated_prices: Dict[str, List[Dict[str, float]]] = self._generate_prices()
 
     def _generate_prices(self) -> Dict[str, List[Dict[str, float]]]:
@@ -39,7 +39,7 @@ class HestonModelDataSource(DataSourceInterface):
             return {ticker: self.simulated_prices[ticker] for ticker in tickers if ticker in self.simulated_prices}
         return self.simulated_prices
 
-    async def subscribe_realtime_data(self, callback: Callable[[str, Any], None]):
+    async def subscribe_realtime_data(self, callback:  Optional[Callable[[Any], None]] = None):
         """Starts an async task to deliver pre-generated data step by step."""
         if self._simulation_task and not self._simulation_task.done():
             await self.unsubscribe_realtime_data()

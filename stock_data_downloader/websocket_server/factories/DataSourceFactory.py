@@ -1,6 +1,7 @@
 from stock_data_downloader.websocket_server.DataSource.BrownianMotionDataSource import BrownianMotionDataSource
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.websocket_server.DataSource.HyperliquidDataSource import HyperliquidDataSource
+from stock_data_downloader.websocket_server.DataSource.HestonModelDataSource import HestonModelDataSource
 from stock_data_downloader.websocket_server.factories.ExchangeFactory import logger
 
 
@@ -61,9 +62,29 @@ class DataSourceFactory:
                 network=network,
                 tickers=tickers
             )
+        elif source_type == "heston":
+            logger.info("Creating HestonModelDataSource")
+
+            # Extract HestonModelDataSource specific settings
+            stats = config.get("stats", {})
+            start_prices = config.get("start_prices", {})
+            timesteps = config.get("timesteps", 252)
+            interval = config.get("interval", 1.0/252) # Default for daily steps
+            seed = config.get("seed")
+            wait_time = config.get("wait_time", 0.1)
+
+            # Create and return HestonModelDataSource
+            return HestonModelDataSource(
+                stats=stats,
+                start_prices=start_prices,
+                timesteps=timesteps,
+                interval=interval,
+                seed=seed,
+                wait_time=wait_time
+            )
 
         else:
-            available_types = ["brownian", "hyperliquid"]
+            available_types = ["brownian", "hyperliquid", "heston"]
             err_msg = f"Data source type '{source_type}' not supported. Available types: {', '.join(available_types)}"
             logger.error(err_msg)
             raise ValueError(err_msg)

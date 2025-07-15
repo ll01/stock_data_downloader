@@ -11,6 +11,7 @@ from stock_data_downloader.websocket_server.factories.DataSourceFactory import D
 from stock_data_downloader.websocket_server.factories.ExchangeFactory import ExchangeFactory
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.server import WebSocketServer
+from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
 
 logger = logging.getLogger(__name__)
@@ -67,10 +68,16 @@ async def create_server_from_config(config: Dict[str, Any]) -> WebSocketServer:
     realtime = not simulation_mode
     max_in_flight_messages = server_config.get("max_in_flight_messages", 10)
     
+    # Create the TradingSystem
+    trading_system = TradingSystem(
+        exchange=exchange,
+        portfolio=portfolio,
+        data_source=data_source
+    )
+
     # Create the WebSocket server
     server = WebSocketServer(
-        data_source=data_source,
-        exchange=exchange,
+        trading_system=trading_system,
         connection_manager=connection_manager,
         message_handler=message_handler,
         uri=websocket_uri,

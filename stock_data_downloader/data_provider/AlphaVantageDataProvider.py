@@ -6,8 +6,8 @@ from typing import List, Union
 import pandas as pd
 import requests
 
-from .DataProvider import DataProvider
-from OutlierIdentifier import OutlierIdentifier
+from stock_data_downloader.data_provider.DataProvider import DataProvider
+from stock_data_downloader.data_provider.OutlierIdentifier import OutlierIdentifier
 
 logger = logging.getLogger(__name__)
 

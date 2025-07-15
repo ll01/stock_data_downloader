@@ -198,9 +198,13 @@ class WebSocketServer:
             historical_data: Dict[
                 str, List[Dict[str, float]]
             ] = await self.trading_system.data_source.get_historical_data()
-
-            for _, time_serise in historical_data.items():
+            if self.realtime:
                 batch_size = 100
+                action = "price_history"
+            else:
+                batch_size = 1
+                action = "price_update"
+            for _, time_serise in historical_data.items():
                 historical_data_batches = [
                     time_serise[i : i + batch_size]
                     for i in range(0, len(time_serise), batch_size)
@@ -208,7 +212,7 @@ class WebSocketServer:
                 for batch in historical_data_batches:
                     await self.connection_manager.send(
                         websocket,
-                        "price_history",
+                        action,
                         batch,
                     )
                 await asyncio.sleep(0.01)

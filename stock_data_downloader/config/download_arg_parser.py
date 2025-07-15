@@ -59,9 +59,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--log-level",
         type=str,
-        default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the logging level (default: INFO)",
+        help="Set the logging level",
     )
     parser.add_argument(
         "--keep-csv",

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from math import exp, sqrt
 import random
 from multiprocessing import Pool
@@ -179,17 +180,21 @@ def simulate_heston_prices(
             prices.append(new_price)
 
         # Convert to OHLCV format (simplified for this example)
+        now = datetime.now(timezone.utc)
         for i in range(len(prices)):
             price = prices[i]
             # Simple OHLC generation from price points
             open_price = prices[i-1] if i > 0 else price
             high_price = max(open_price, price) + np.random.uniform(0, 0.01) * price
             low_price = min(open_price, price) - np.random.uniform(0, 0.01) * price
-            
+            step_duration_in_days = dt * 252 
+            current_time = now + timedelta(days=i * step_duration_in_days)
             simulated_data[ticker].append({
+                "timestamp": current_time.isoformat(),
+                "ticker": ticker,
                 "open": open_price,
                 "high": high_price,
-                "low": low_price,
+                "low": low_price,   
                 "close": price,
                 "volume": np.random.randint(10000, 50000) # Synthetic volume
             })

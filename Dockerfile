@@ -8,4 +8,4 @@ COPY . .
 RUN pip install --no-cache-dir -e .
 
 # Command to run when container starts
-CMD ["python", "-m", "stock_data_downloader.main"]
+CMD ["python", "-m", "stock_data_downloader.run_server"]

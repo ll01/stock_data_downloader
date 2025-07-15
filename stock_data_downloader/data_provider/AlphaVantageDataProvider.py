@@ -6,7 +6,7 @@ from typing import List, Union
 import pandas as pd
 import requests
 
-from DataProvider import DataProvider
+from .DataProvider import DataProvider
 from OutlierIdentifier import OutlierIdentifier
 
 logger = logging.getLogger(__name__)

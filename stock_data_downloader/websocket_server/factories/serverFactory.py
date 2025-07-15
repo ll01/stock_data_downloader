@@ -99,7 +99,7 @@ async def start_server_from_config(config: Dict[str, Any]):
     server = await create_server_from_config(config)
     
     # Start the server
-    await server.start()
+    # await server.start()
     
     # Extract server parameters
     server_config = config.get("server", {})
@@ -112,7 +112,7 @@ async def start_server_from_config(config: Dict[str, Any]):
     host_port = parts[-1].split(":")
     host = host_port[0]
     port = int(host_port[1])
-    
+    logger.info(f"WebSocket server will run on {host}:{port}")
     # Configure ping interval based on mode
     simulation_mode = config.get("simulation", {}).get("enabled", True)
     ping_interval = None if simulation_mode else server_config.get("ping_interval", 20)
@@ -121,6 +121,7 @@ async def start_server_from_config(config: Dict[str, Any]):
     logger.info(f"Starting {'Simulation' if simulation_mode else 'Live'} WebSocket server on {websocket_uri}")
     
     # Start the websockets server listener
+    logger.debug(f"Starting WebSocket server on {websocket_uri} with ping interval {ping_interval} and timeout {ping_timeout}")
     async with websockets.serve(
         server.websocket_server,
         host,

@@ -35,7 +35,7 @@ from stock_data_downloader.websocket_server.portfolio import Portfolio
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s:%(lineno)d - %(level极ame)s - %(message)s",
+    format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
 )
 
 

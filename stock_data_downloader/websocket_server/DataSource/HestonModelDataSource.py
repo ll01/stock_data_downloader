@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from typing import Any, Callable, Dict, List, Optional
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.data_processing.simulation import simulate_heston_prices
+
+logger = logging.getLogger(__name__)
 
 class HestonModelDataSource(DataSourceInterface):
     """
@@ -22,7 +25,7 @@ class HestonModelDataSource(DataSourceInterface):
 
     def _generate_prices(self) -> Dict[str, List[Dict[str, float]]]:
         """Generate synthetic prices using the Heston model."""
-        print(f"Generating {self.timesteps} timesteps of Heston model data...")
+        logger.debug(f"Generating {self.timesteps} timesteps of Heston model data...")
         return simulate_heston_prices(
             self.stats,
             self.start_prices,
@@ -33,7 +36,7 @@ class HestonModelDataSource(DataSourceInterface):
 
     async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> Dict[str, List[Dict[str, float]]]:
         """Return pre-generated simulated prices."""
-        print("Providing historical data from Heston simulation.")
+        logger.debug("Providing historical data from Heston simulation.")
         # Filter for requested tickers if provided
         if tickers:
             return {ticker: self.simulated_prices[ticker] for ticker in tickers if ticker in self.simulated_prices}
@@ -45,7 +48,7 @@ class HestonModelDataSource(DataSourceInterface):
             await self.unsubscribe_realtime_data()
         
         self._callback = callback
-        print(f"Starting real-time Heston simulation task with {self.wait_time}s interval...")
+        logger.debug(f"Starting real-time Heston simulation task with {self.wait_time}s interval...")
         self._simulation_task = asyncio.create_task(self._realtime_simulation_task())
 
     async def unsubscribe_realtime_data(self):
@@ -55,7 +58,7 @@ class HestonModelDataSource(DataSourceInterface):
             try:
                 await self._simulation_task
             except asyncio.CancelledError:
-                print("Heston real-time simulation task cancelled.")
+                logger.debug("Heston real-time simulation task cancelled.")
             finally:
                 self._simulation_task = None
                 self._callback = None
@@ -76,9 +79,9 @@ class HestonModelDataSource(DataSourceInterface):
                 # Use the notifycallback from the interface
                 await self._notify_callback("price_update", current_step_payload)
                 await asyncio.sleep(self.wait_time)
-            print("Heston real-time simulation finished.")
+            logger.debug("Heston real-time simulation finished.")
         except asyncio.CancelledError:
-            print("Heston real-time simulation task received cancellation.")
+            logger.debug("Heston real-time simulation task received cancellation.")
             raise
         finally:
             self._simulation_task = None
@@ -86,11 +89,11 @@ class HestonModelDataSource(DataSourceInterface):
             
     async def reset(self):
         """Regenerates synthetic prices."""
-        print("Resetting HestonModelDataSource...")
+        logger.debug("Resetting HestonModelDataSource...")
         if self._simulation_task:
             await self.unsubscribe_realtime_data()
         
         self.seed = None if self.seed is None else self.seed + 1
-        print(f"New seed for generation: {self.seed}")
+        logger.debug(f"New seed for generation: {self.seed}")
         self.simulated_prices = self._generate_prices()
-        print("HestonModelDataSource data regeneration complete.")
+        logger.debug("HestonModelDataSource data regeneration complete.")

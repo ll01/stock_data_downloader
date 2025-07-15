@@ -209,6 +209,11 @@ class WebSocketServer:
                     time_serise[i : i + batch_size]
                     for i in range(0, len(time_serise), batch_size)
                 ]
+                if websocket not in self.connection_manager.connections:
+                    logger.warning(
+                        f"WebSocket connection {websocket.remote_address} is no longer active. Skipping historical data send."
+                    )
+                    return
                 for batch in historical_data_batches:
                     await self.connection_manager.send(
                         websocket,

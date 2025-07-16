@@ -22,7 +22,7 @@ class HestonModelDataSource(DataSourceInterface):
 
         self._simulation_task: Optional[asyncio.Task] = None
 
-    async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> AsyncGenerator[List[Dict[str, Any]], None]:
+    def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> AsyncGenerator[List[Dict[str, Any]], None]:
         """Yields historical data from the Heston simulation, one timestep at a time."""
         logger.debug("Streaming historical data from Heston simulation...")
         return generate_heston_ticks(
@@ -62,7 +62,7 @@ class HestonModelDataSource(DataSourceInterface):
             data_generator = generate_heston_ticks(
                 self.stats, self.start_prices, self.timesteps, self.interval, self.seed
             )
-            for timestep_data in data_generator:
+            async for timestep_data in data_generator:
                 await self._notify_callback("price_update", timestep_data)
                 await asyncio.sleep(self.wait_time)
 

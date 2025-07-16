@@ -200,8 +200,10 @@ class WebSocketServer:
         logger.info(f"{log_msg} to {websocket.remote_address}")
         
         try:
-            data_generator = await self.trading_system.data_source.get_historical_data()
+            # Get historical data generator (no await needed)
+            data_generator = self.trading_system.data_source.get_historical_data()
             
+            # Consume async generator
             async for data_batch in data_generator:
                 if not self.connection_manager.connections or websocket not in self.connection_manager.connections:
                     logger.warning(f"Client {websocket.remote_address} disconnected, stopping data stream.")

@@ -45,35 +45,33 @@ class HyperliquidDataSource(DataSourceInterface):
     async def get_historical_data(
         self, tickers: List[str] = [], interval: str = ""
     ) -> AsyncGenerator[List[Dict[str, Any]], None]:
-        """Fetch historical OHLCV data and yield it as a single batch."""
-        tickers = tickers or self.tickers
-        interval = interval or self.interval
-        all_ticker_data = []
+        """Fetch historical OHLCV data and yield it per ticker."""
+        tickers_ = tickers or self.tickers
+        interval_ = interval or self.interval
 
-        for ticker in tickers:
+        for ticker in tickers_:
             try:
                 end_time = datetime.now(timezone.utc)
-                # Fetch a reasonable amount of recent data for priming
                 start_time = end_time - timedelta(days=1)
                 start_timestamp = int(start_time.timestamp() * 1000)
                 end_timestamp = int(end_time.timestamp() * 1000)
-                
+
                 ohlcv = self._info.candles_snapshot(
-                    ticker, interval, start_timestamp, end_timestamp
+                    ticker, interval_, start_timestamp, end_timestamp
                 )
-                
-                for entry in ohlcv:
-                    all_ticker_data.append(self._map_candle_message(entry))
+
+                # Map the data for the current ticker
+                ticker_data = [self._map_candle_message(entry) for entry in ohlcv]
+
+                # Yield the data for this ticker as one chunk
+                if ticker_data:
+                    yield ticker_data
 
             except Exception as e:
                 logger.error(f"Error fetching historical data for {ticker}: {e}")
             finally:
-                # Respect potential rate limits
+                # Respect potential rate limits before fetching the next ticker
                 await asyncio.sleep(0.25)
-        
-        # Yield all the fetched data as a single list (one batch)
-        if all_ticker_data:
-            yield all_ticker_data
 
     async def subscribe_realtime_data(self, callback: Callable[[Any], None]):
         """Subscribe to real-time price updates via WebSocket."""

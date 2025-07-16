@@ -1,9 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from math import exp, sqrt
 import random
-from typing import Dict, List, Optional, Generator
+from typing import AsyncGenerator, Dict, List, Optional, Generator, Any
 import numpy as np
-from datetime import datetime, timedelta, timezone
 
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 
@@ -23,7 +22,7 @@ def generate_gbm_ticks(
     timesteps: int = 100,
     interval: float = 1.0,
     seed: Optional[int] = None,
-) -> Generator[List[Dict[str, any]], None, None]:
+) -> Generator[List[Dict[str, Any]], None, None]:
     """
     A generator that simulates prices for multiple tickers using Geometric Brownian Motion,
     yielding the data for one timestep at a time.
@@ -85,13 +84,13 @@ def generate_gbm_ticks(
         yield timestep_data
 
 
-def generate_heston_ticks(
+async def generate_heston_ticks(
     stats: Dict[str, TickerStats],
     start_prices: Dict[str, float],
     timesteps: int,
     dt: float,  # Time step size (e.g., 1/252 for daily)
     seed: Optional[int] = None,
-) -> Generator[List[Dict[str, any]], None, None]:
+) -> AsyncGenerator[List[Dict[str, Any]], None]:
     """
     A generator that simulates stock prices using the Heston model,
     yielding the data for one timestep at a time.
@@ -136,7 +135,7 @@ def generate_heston_ticks(
             rho = getattr(ticker_stats, "rho", -0.6)
             
             # --- Correlated random shocks for this step ---
-            corr_matrix = np.array([[1, rho], [rho, 1]])
+            corr_matrix = np.array([[1.0, rho], [rho, 1.0]])
             chol_matrix = np.linalg.cholesky(corr_matrix)
             random_shocks = np.random.normal(size=2)
             correlated_shocks = random_shocks @ chol_matrix.T
@@ -181,3 +180,6 @@ def generate_heston_ticks(
             timestep_data.append(tick_data)
 
         yield timestep_data
+        
+        
+        

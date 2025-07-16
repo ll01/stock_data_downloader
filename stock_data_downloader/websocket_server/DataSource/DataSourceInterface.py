@@ -15,7 +15,7 @@ class DataSourceInterface(ABC):
         self.tickers = tickers
 
     @abstractmethod
-    async def get_historical_data(self, tickers: List[str] = [] , interval: str= "") -> AsyncGenerator[List[Dict[str, Any]], None]:
+    def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> AsyncGenerator[List[Dict[str, Any]], None]:
         """Fetch historical data (e.g., OHLCV) for backtesting."""
         pass
 

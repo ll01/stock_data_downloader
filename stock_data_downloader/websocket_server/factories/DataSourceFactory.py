@@ -1,4 +1,5 @@
 import logging
+from stock_data_downloader.models import TickerConfig
 from stock_data_downloader.websocket_server.DataSource.BrownianMotionDataSource import BrownianMotionDataSource
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
@@ -27,30 +28,26 @@ class DataSourceFactory:
         Raises:
             ValueError: If the data source type is not supported
         """
-        source_type = config.get("model_type", "brownian").lower()
+       
+        source_name = config.get("name")
+        
+        if not source_name:
+            logger.error("Data source name is required in the configuration.")
+            raise ValueError("Data source name is required in the configuration.")
+        if source_name == "backtest":
+            logger.info("Creating BacktestDataSource")
+            
+            ticker_configs_raw: Dict[str, Dict[str, Any]] = config.get("ticker_configs", {})
+            ticker_configs = {
+                ticker: TickerConfig(**config) for ticker, config in ticker_configs_raw.items()
+            }
 
-        if source_type == "brownian":
-            logger.info("Creating BrownianMotionDataSource")
-
-            # Extract BrownianMotionDataSource specific settings
-            stats = config.get("stats", {})
-            start_prices = config.get("start_prices", {})
-            timesteps = config.get("timesteps", 252)
-            interval = config.get("interval", 1.0)
-            seed = config.get("seed")
-            wait_time = config.get("wait_time", 0.1)
-
-            # Create and return BrownianMotionDataSource
-            return BrownianMotionDataSource(
-                stats=stats,
-                start_prices=start_prices,
-                timesteps=timesteps,
-                interval=interval,
-                seed=seed,
-                wait_time=wait_time
+            # Create and return BacktestDataSource
+            return BacktestDataSource(
+                ticker_configs=ticker_configs,
+                global_config=config
             )
-
-        elif source_type == "hyperliquid":
+        elif source_name == "hyperliquid":
             logger.info("Creating HyperliquidDataSource")
 
             # Extract HyperliquidDataSource specific settings
@@ -67,7 +64,7 @@ class DataSourceFactory:
         
 
         else:
-            available_types = ["brownian", "hyperliquid", "heston"]
-            err_msg = f"Data source type '{source_type}' not supported. Available types: {', '.join(available_types)}"
+            available_types = ["backtest", "hyperliquid"]
+            err_msg = f"Data source type '{source_name}' not supported. Available types: {', '.join(available_types)}"
             logger.error(err_msg)
             raise ValueError(err_msg)

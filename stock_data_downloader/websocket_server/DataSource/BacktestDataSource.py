@@ -3,6 +3,8 @@ from stock_data_downloader.websocket_server.DataSource.DataSourceInterface impor
 from stock_data_downloader.data_processing.simulation import generate_heston_ticks, generate_gbm_ticks
 from stock_data_downloader.models import TickerConfig
 from stock_data_downloader.data_processing.TickerStats import TickerStats
+import logging
+logger = logging.getLogger(__name__)
 
 def convert_to_ticker_stats(ticker_config: TickerConfig) -> TickerStats:
     """Convert TickerConfig to TickerStats based on the model type"""
@@ -27,13 +29,13 @@ class BacktestDataSource(DataSourceInterface):
         
     async def subscribe_realtime_data(self, callback):
         self._callback = callback
-        model_type = self.config.get('model_type', 'heston')
+        backtest_model_type = self.config.get('backtest_data_type', 'heston')
         
         # Initialize current prices from config
         for ticker, price in self.config['start_prices'].items():
             self.current_prices[ticker] = price
             
-        if model_type == 'heston':
+        if backtest_model_type == 'heston':
             self.generator = generate_heston_ticks(
                 stats={k: v.heston.model_dump() for k,v in self.ticker_configs.items() if v.heston},
                 start_prices=self.config['start_prices'],
@@ -41,7 +43,7 @@ class BacktestDataSource(DataSourceInterface):
                 dt=self.config['interval'],
                 seed=self.config.get('seed')
             )
-        elif model_type == 'gbm':
+        elif backtest_model_type == 'gbm' or backtest_model_type == 'brownian':
             # Convert TickerConfig to TickerStats
             stats = {k: convert_to_ticker_stats(v) for k,v in self.ticker_configs.items()}
             self.generator = generate_gbm_ticks(
@@ -51,6 +53,10 @@ class BacktestDataSource(DataSourceInterface):
                 interval=self.config['interval'],
                 seed=self.config.get('seed')
             )
+        else:
+            avalable_types = ["heston", "gbm"]
+            logger.error(f"Unsupported backtest model type: {backtest_model_type}. Available types: {', '.join(avalable_types)}")
+            raise ValueError(f"Unsupported backtest model type: {backtest_model_type}")
             
         if self.generator:
             async for tick_batch in self.generator:

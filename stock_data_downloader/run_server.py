@@ -63,13 +63,17 @@ async def main():
         
         # Check if we're in simulation mode with Brownian data source
         simulation_enabled = config.get("simulation", {}).get("enabled", True)
-        data_source_type = config.get("data_source", {}).get("type", "brownian").lower()
-        
+        data_source_name: str = config.get("data_source", {}).get("name", None)
+        ticker_configs = config.get("data_source", {}).get("ticker_configs", [])
+        print(f"Data source name: {ticker_configs}")
+        if not data_source_name:
+            logging.error("No data source name provided in configuration.")
+            raise ValueError("No data source name provided in configuration.")
         # If using Brownian simulation, load stock statistics
-        if simulation_enabled and data_source_type == "brownian":
-            if not args.sim_data_file:
-                logging.warning("No simulation data file provided. Using empty stats.")
-                raise ValueError("No simulation data file provided.")
+        if simulation_enabled and data_source_name.lower() == "backtest":
+            if not args.sim_data_file and not ticker_configs:
+                logging.warning("No simulation data file or ticker configs provided. Using empty stats.")
+                raise ValueError("No simulation data file or ticker configs provided.")
             else:
                 logging.info(f"Loading stock statistics from {args.sim_data_file}")
                 stats = load_stock_stats(args.sim_data_file)

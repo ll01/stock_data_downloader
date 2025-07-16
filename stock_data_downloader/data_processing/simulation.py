@@ -85,7 +85,7 @@ def generate_gbm_ticks(
 
 
 async def generate_heston_ticks(
-    stats: Dict[str, TickerStats],
+    stats: Dict[str, Dict],
     start_prices: Dict[str, float],
     timesteps: int,
     dt: float,  # Time step size (e.g., 1/252 for daily)
@@ -113,7 +113,7 @@ async def generate_heston_ticks(
     current_prices = start_prices.copy()
     # Initialize variance for each ticker to its long-run average (theta)
     current_variances = {
-        ticker: s.theta for ticker, s in stats.items() if s.theta is not None
+        ticker: s.get("theta", 0.04) for ticker, s in stats.items() if s.get("theta") is not None
     }
     start_time = datetime.now(timezone.utc)
 
@@ -128,11 +128,11 @@ async def generate_heston_ticks(
                 continue
 
             # --- Extract Heston parameters ---
-            mu = getattr(ticker_stats, "mu", 0.0)
-            kappa = getattr(ticker_stats, "kappa", 3.0)
-            theta = getattr(ticker_stats, "theta", 0.04)
-            xi = getattr(ticker_stats, "xi", 0.3)
-            rho = getattr(ticker_stats, "rho", -0.6)
+            mu = ticker_stats.get("mu", 0.0)
+            kappa = ticker_stats.get("kappa", 3.0)
+            theta = ticker_stats.get("theta", 0.04)
+            xi = ticker_stats.get("xi", 0.3)
+            rho = ticker_stats.get("rho", -0.6)
             
             # --- Correlated random shocks for this step ---
             corr_matrix = np.array([[1.0, rho], [rho, 1.0]])

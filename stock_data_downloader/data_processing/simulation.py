@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from math import exp, sqrt
 import random
-from typing import AsyncGenerator, Dict, List, Optional, Generator, Any
+from typing import AsyncGenerator, Dict, List, Optional, Any
 import numpy as np
+import asyncio
 
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 
@@ -16,15 +17,15 @@ def _calculate_gbm_step(
     )
 
 
-def generate_gbm_ticks(
+async def generate_gbm_ticks(
     stats: Dict[str, TickerStats],
     start_prices: Dict[str, float],
     timesteps: int = 100,
     interval: float = 1.0,
     seed: Optional[int] = None,
-) -> Generator[List[Dict[str, Any]], None, None]:
+) -> AsyncGenerator[List[Dict[str, Any]], None]:
     """
-    A generator that simulates prices for multiple tickers using Geometric Brownian Motion,
+    An async generator that simulates prices for multiple tickers using Geometric Brownian Motion,
     yielding the data for one timestep at a time.
 
     Args:
@@ -82,6 +83,7 @@ def generate_gbm_ticks(
             current_prices[ticker] = close_price
         
         yield timestep_data
+        await asyncio.sleep(0)  # Yield control to event loop
 
 
 async def generate_heston_ticks(

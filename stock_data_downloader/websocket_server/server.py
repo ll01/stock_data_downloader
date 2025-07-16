@@ -30,6 +30,7 @@ from stock_data_downloader.websocket_server.MessageHandler import (
     MessageHandler,
 )
 from stock_data_downloader.websocket_server.portfolio import Portfolio
+from stock_data_downloader.websocket_server.stream_processor import StreamProcessor
 
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class WebSocketServer:
         self.simulation_running = False
         self._order_subscription_id: Optional[int] = None
         self.loop = None
+        self.stream_processor = StreamProcessor()
+        self.processor_task = None
 
     async def _process_client_message(self, websocket: ServerConnection):
         try:
@@ -171,24 +174,34 @@ class WebSocketServer:
 
     async def run_realtime(self):
         loop = asyncio.get_running_loop()
-
-        def on_price_update(price_batch: Dict[str, Union[str, float]]):
+        
+        # Start stream processor
+        self.processor_task = asyncio.create_task(self.stream_processor.start())
+        
+        # Subscribe broadcast to processor
+        self.stream_processor.subscribe(self.broadcast_processed_data)
+        
+        async def on_price_update(price_batch: Dict[str, Union[str, float]]):
             try:
                 if not self.connection_manager.connections:
                     return
-                asyncio.run_coroutine_threadsafe(
-                    self.connection_manager.broadcast_to_all(
-                        type="price_update",
-                        payload=[price_batch]
-                    ),
-                    loop
-                )
+                # Ingest into stream processor instead of direct broadcast
+                await self.stream_processor.ingest(price_batch)
             except asyncio.CancelledError:
                 logger.info("Realtime task was cancelled")
             except Exception as e:
                 logger.error(f"Error in realtime price generator: {e}")
 
         await self.trading_system.data_source.subscribe_realtime_data(callback=on_price_update)
+        
+    async def broadcast_processed_data(self, data):
+        """Broadcast processed data to all connected clients"""
+        if not self.connection_manager.connections:
+            return
+        await self.connection_manager.broadcast_to_all(
+            type="price_update",
+            payload=data
+        )
 
     async def stream_data_to_client(self, websocket: ServerConnection, is_backtest: bool):
         """
@@ -200,27 +213,39 @@ class WebSocketServer:
         logger.info(f"{log_msg} to {websocket.remote_address}")
         
         try:
-            # Get historical data generator (no await needed)
-            data_generator = self.trading_system.data_source.get_historical_data()
+            # Fetch historical data (await needed)
+            historical_data = await self.trading_system.data_source.get_historical_data()
             
-            # Consume async generator
-            async for data_batch in data_generator:
+            # Start stream processor for backtest
+            if is_backtest:
+                self.processor_task = asyncio.create_task(self.stream_processor.start())
+                self.stream_processor.subscribe(
+                    lambda data: self.connection_manager.send(
+                        websocket, "price_update", data
+                    )
+                )
+            
+            # Process data in batches
+            batch_size = 100  # Send 100 data points per batch
+            for i in range(0, len(historical_data), batch_size):
                 if not self.connection_manager.connections or websocket not in self.connection_manager.connections:
                     logger.warning(f"Client {websocket.remote_address} disconnected, stopping data stream.")
                     break
-
-                # For backtests, send data as 'price_update' to be processed by the strategy
-                # For real-time priming, send as 'price_history' to just load the chart
-                message_type = "price_update" if is_backtest else "price_history"
                 
-                await self.connection_manager.send(
-                    websocket,
-                    message_type,
-                    data_batch,
-                )
-                # In backtesting, we add a tiny sleep to prevent the event loop from blocking
+                data_batch = historical_data[i:i+batch_size]
+                
                 if is_backtest:
+                    # Process through stream processor
+                    await self.stream_processor.ingest(data_batch)
+                    # Add small delay to prevent event loop blocking
                     await asyncio.sleep(0.001)
+                else:
+                    # For real-time priming, send directly as historical data
+                    await self.connection_manager.send(
+                        websocket,
+                        "price_history",
+                        data_batch,
+                    )
 
             logger.info(f"Finished streaming data to {websocket.remote_address}")
 
@@ -235,6 +260,14 @@ class WebSocketServer:
                 type="error",
                 payload=fail_payload,
             )
+            
+        finally:
+            if is_backtest and self.processor_task:
+                await self.stream_processor.stop()
+                try:
+                    await self.processor_task
+                except asyncio.CancelledError:
+                    pass
 
     async def reset_simulation(self, initiating_websocket=None):
         logger.info("Resetting simulation...")
@@ -313,6 +346,14 @@ class WebSocketServer:
                 await self.realtime_task
             except asyncio.CancelledError:
                 pass
+                
+        if self.processor_task:
+            await self.stream_processor.stop()
+            try:
+                await self.processor_task
+            except asyncio.CancelledError:
+                pass
+                
         await self.stop()
 
     async def stop(self):

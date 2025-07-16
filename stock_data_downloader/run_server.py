@@ -1,14 +1,13 @@
 import argparse
 import asyncio
 import logging
-from typing import Dict
+from typing import Dict, Any
 
 from stock_data_downloader.config.logging_config import setup_logging
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.etl.parquet_etl import load_stock_stats
 from stock_data_downloader.websocket_server.ConfigHandler import ConfigHandler
 from stock_data_downloader.websocket_server.factories.serverFactory import start_server_from_config
-
 
 
 def parse_arguments():
@@ -41,11 +40,16 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def is_valid_file_path(file_path: str) -> bool:
+    """Check if the file path is valid (not None, empty, or the string 'None')."""
+    return file_path is not None and file_path.strip() != "" and file_path.lower() != "none"
+
+
 def generate_basic_start_prices(
-    starting_price: float, stats: Dict[str, TickerStats]
+    starting_price: float, tickers_or_stats: Dict[str, Any]
 ) -> Dict[str, float]:
     """Generates basic starting prices for each ticker."""
-    return {ticker: starting_price for ticker, _ in stats.items()}
+    return {ticker: starting_price for ticker in tickers_or_stats.keys()}
 
 
 async def main():
@@ -64,30 +68,41 @@ async def main():
         # Check if we're in simulation mode with Brownian data source
         simulation_enabled = config.get("simulation", {}).get("enabled", True)
         data_source_name: str = config.get("data_source", {}).get("name", None)
-        ticker_configs = config.get("data_source", {}).get("ticker_configs", [])
-        print(f"Data source name: {ticker_configs}")
+        ticker_configs = config.get("data_source", {}).get("ticker_configs", {})
+        
         if not data_source_name:
             logging.error("No data source name provided in configuration.")
             raise ValueError("No data source name provided in configuration.")
-        # If using Brownian simulation, load stock statistics
+        
+        # Initialize stats and start_prices
+        stats: Dict[str, TickerStats] = {}
+        start_prices: Dict[str, float] = {}
+        
+        # If using backtest data source, determine data source method
         if simulation_enabled and data_source_name.lower() == "backtest":
-            if not args.sim_data_file and not ticker_configs:
-                logging.warning("No simulation data file or ticker configs provided. Using empty stats.")
-                raise ValueError("No simulation data file or ticker configs provided.")
-            elif args.sim_data_file:
+            # Check if we have a valid simulation data file
+            if is_valid_file_path(args.sim_data_file):
                 logging.info(f"Loading stock statistics from {args.sim_data_file}")
                 stats = load_stock_stats(args.sim_data_file)
-                    # Update config with stats and start prices
-                config["data_source"]["ticker_configs"] = stats
                 start_prices = generate_basic_start_prices(args.start_price, stats)
+                config["data_source"]["stats"] = stats
                 config["data_source"]["start_prices"] = start_prices
-        
-            else:
-                logging.info("Using ticker configs from configuration")
-                
-            # Generate starting prices
-           
             
+            # Otherwise, check if we have ticker configs
+            elif ticker_configs:
+                logging.info("Using ticker configs from configuration to determine start prices.")
+                # DataSourceFactory will handle TickerConfig creation from ticker_configs
+                # We just need to ensure start_prices are available
+                start_prices = config.get("data_source", {}).get("start_prices", {})
+                if not start_prices:
+                    logging.warning("No start_prices found in config for ticker_configs. Generating basic start prices.")
+                    start_prices = generate_basic_start_prices(args.start_price, ticker_configs)
+                config["data_source"]["start_prices"] = start_prices
+            
+            # Neither valid file nor ticker configs available
+            else:
+                logging.error("No valid simulation data file or ticker configs provided for backtest mode.")
+                raise ValueError("No valid simulation data file or ticker configs provided.")
         
         # Start the server
         logging.info("Starting server...")

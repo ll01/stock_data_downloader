@@ -1,6 +1,7 @@
 import logging
 from stock_data_downloader.websocket_server.DataSource.BrownianMotionDataSource import BrownianMotionDataSource
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
+from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
 from stock_data_downloader.websocket_server.DataSource.HyperliquidDataSource import HyperliquidDataSource
 
 
@@ -26,7 +27,7 @@ class DataSourceFactory:
         Raises:
             ValueError: If the data source type is not supported
         """
-        source_type = config.get("type", "brownian").lower()
+        source_type = config.get("model_type", "brownian").lower()
 
         if source_type == "brownian":
             logger.info("Creating BrownianMotionDataSource")

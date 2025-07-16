@@ -74,16 +74,20 @@ async def main():
             if not args.sim_data_file and not ticker_configs:
                 logging.warning("No simulation data file or ticker configs provided. Using empty stats.")
                 raise ValueError("No simulation data file or ticker configs provided.")
-            else:
+            elif args.sim_data_file:
                 logging.info(f"Loading stock statistics from {args.sim_data_file}")
                 stats = load_stock_stats(args.sim_data_file)
+                    # Update config with stats and start prices
+                config["data_source"]["ticker_configs"] = stats
+                start_prices = generate_basic_start_prices(args.start_price, stats)
+                config["data_source"]["start_prices"] = start_prices
+        
+            else:
+                logging.info("Using ticker configs from configuration")
                 
             # Generate starting prices
-            start_prices = generate_basic_start_prices(args.start_price, stats)
+           
             
-            # Update config with stats and start prices
-            config["data_source"]["stats"] = stats
-            config["data_source"]["start_prices"] = start_prices
         
         # Start the server
         logging.info("Starting server...")

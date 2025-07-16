@@ -139,18 +139,21 @@ class WebSocketServer:
 
     async def websocket_server(self, websocket: ServerConnection):
         await self.connection_manager.add_connection(websocket)
-
         try:
-            if not self.realtime:
-                await self.send_historical_data(websocket)
-                await self._process_client_message(websocket)
-            else:
-                if len(self.connection_manager.connections) == 1 and (
-                    self.realtime_task is None or self.realtime_task.done()
-                ):
-                    await self.send_historical_data(websocket)
+            if self.realtime:
+                # In real-time, first send a batch of recent historical data to prime the client
+                await self.stream_data_to_client(websocket, is_backtest=False)
+                # Then, if this is the first connection, start the live subscription task
+                if len(self.connection_manager.connections) == 1 and (self.realtime_task is None or self.realtime_task.done()):
                     self.realtime_task = asyncio.create_task(self.run_realtime())
-                await self._process_client_message(websocket)
+            else:
+                # In backtest mode, stream the entire simulation from the generator
+                await self.stream_data_to_client(websocket, is_backtest=True)
+                # After the stream is done, the backtest is over, so send the final report request
+                await websocket.send(json.dumps({"type": "price_simulation_end"}))
+
+            # Process client messages (e.g., trade orders)
+            await self._process_client_message(websocket)
 
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
@@ -159,14 +162,9 @@ class WebSocketServer:
                 await websocket.close()
             except Exception:
                 pass
-                
             await self.connection_manager.remove_connection(websocket)
-
-            if (
-                self.realtime
-                and not self.connection_manager.connections
-                and self.realtime_task
-            ):
+            # Clean up the real-time task if all clients disconnect
+            if self.realtime and not self.connection_manager.connections and self.realtime_task:
                 self.realtime_task.cancel()
             if self._order_subscription_id:
                 await self.stop()
@@ -192,51 +190,47 @@ class WebSocketServer:
 
         await self.trading_system.data_source.subscribe_realtime_data(callback=on_price_update)
 
-    async def send_historical_data(self, websocket: ServerConnection):
-        logger.info(f"Sending historical data to {websocket.remote_address}")
+    async def stream_data_to_client(self, websocket: ServerConnection, is_backtest: bool):
+        """
+        Streams data from the data source to the client.
+        - In real-time (is_backtest=False), it sends a priming chunk of historical data.
+        - In backtest mode (is_backtest=True), it streams the entire simulation.
+        """
+        log_msg = "Streaming backtest data" if is_backtest else "Sending historical priming data"
+        logger.info(f"{log_msg} to {websocket.remote_address}")
+        
         try:
-            historical_data: Dict[
-                str, List[Dict[str, float]]
-            ] = await self.trading_system.data_source.get_historical_data()
-            if self.realtime:
-                batch_size = 100
-                action = "price_history"
-            else:
-                batch_size = 1
-                action = "price_update"
-            for _, time_serise in historical_data.items():
-                historical_data_batches = [
-                    time_serise[i : i + batch_size]
-                    for i in range(0, len(time_serise), batch_size)
-                ]
-                if websocket not in self.connection_manager.connections:
-                    logger.warning(
-                        f"WebSocket connection {websocket.remote_address} is no longer active. Skipping historical data send."
-                    )
-                    return
-                for batch in historical_data_batches:
-                    await self.connection_manager.send(
-                        websocket,
-                        action,
-                        batch,
-                    )
-                await asyncio.sleep(0.01)
+            data_generator = await self.trading_system.data_source.get_historical_data()
+            
+            async for data_batch in data_generator:
+                if not self.connection_manager.connections or websocket not in self.connection_manager.connections:
+                    logger.warning(f"Client {websocket.remote_address} disconnected, stopping data stream.")
+                    break
 
-            logger.info(
-                f"Finished sending historical data to {websocket.remote_address}"
-            )
+                # For backtests, send data as 'price_update' to be processed by the strategy
+                # For real-time priming, send as 'price_history' to just load the chart
+                message_type = "price_update" if is_backtest else "price_history"
+                
+                await self.connection_manager.send(
+                    websocket,
+                    message_type,
+                    data_batch,
+                )
+                # In backtesting, we add a tiny sleep to prevent the event loop from blocking
+                if is_backtest:
+                    await asyncio.sleep(0.001)
+
+            logger.info(f"Finished streaming data to {websocket.remote_address}")
 
         except Exception:
-            logger.exception(
-                f"Error sending historical data to {websocket.remote_address}"
-            )
+            logger.exception(f"Error streaming data to {websocket.remote_address}")
             fail_payload = {
-                "action": "get_historical_data",
-                "reason": "Failed to retrieve historical data for ",
+                "status": "error",
+                "reason": "Failed to retrieve or stream data from the data source.",
             }
             await self.connection_manager.send(
                 websocket,
-                type="no history found",
+                type="error",
                 payload=fail_payload,
             )
 

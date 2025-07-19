@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import os
 import socket
 from typing import Dict, Any
 
 import websockets
 
+from stock_data_downloader.models import AppConfig
 from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.MessageHandler import MessageHandler
 from stock_data_downloader.websocket_server.factories.DataSourceFactory import DataSourceFactory
@@ -24,50 +26,37 @@ def find_free_port():
         return s.getsockname()[1]
 
 
-async def create_server_from_config(config: Dict[str, Any]) -> WebSocketServer:
+async def create_server_from_config(config: AppConfig) -> WebSocketServer:
     """
     Create and configure a WebSocketServer from configuration
     
     Args:
-        config: Server configuration dictionary
+        config: AppConfig object with structured configuration
         
     Returns:
         Configured WebSocketServer instance
     """
-    # Extract configurations
-    exchange_config = config.get("exchange", {})
-    data_source_config = config.get("data_source", {})
-    server_config = config.get("server", {})
-    simulation_config = config.get("simulation", {})
+    # Create portfolio with initial cash from config
+    portfolio = Portfolio(initial_cash=config.initial_cash)
     
-    # Determine if we're in simulation mode
-    simulation_mode = simulation_config.get("enabled", True)
-    
-    # Create portfolio with initial cash
-    initial_cash = simulation_config.get("initial_cash", 100000.0)
-    portfolio = Portfolio(initial_cash=initial_cash)
+    # For now, assume simulation mode (test exchange) since we don't have exchange config in AppConfig
+    # This could be extended in the future to support different exchange types
+
     
     # Create exchange using factory
-    exchange = ExchangeFactory.create_exchange(exchange_config, portfolio, simulation_mode)
+    exchange = ExchangeFactory.create_exchange(config.exchange, portfolio)
     
     # Create data source using factory
-    data_source = DataSourceFactory.create_data_source(data_source_config)
+    data_source = DataSourceFactory.create_data_source(config.data_source)
     
     # Create connection manager and message handler
     connection_manager = ConnectionManager()
     message_handler = MessageHandler()
     
-    # Configure WebSocket server URI
-    websocket_uri = server_config.get("uri")
-    if not websocket_uri:
-        port = server_config.get("port", find_free_port())
-        host = server_config.get("host", "localhost")
-        websocket_uri = f"ws://{host}:{port}"
-    
-    # Set up other server parameters
-    realtime = not simulation_mode
-    max_in_flight_messages = server_config.get("max_in_flight_messages", 10)
-    
+    # Configure WebSocket server URI from server config
+    server_config = config.server
+    websocket_uri = f"ws://{server_config.data_downloader.host}:{ server_config.data_downloader.port}"
+    logger.info(f"WebSocket server will run on {websocket_uri}")
     # Create the TradingSystem
     trading_system = TradingSystem(
         exchange=exchange,
@@ -81,28 +70,24 @@ async def create_server_from_config(config: Dict[str, Any]) -> WebSocketServer:
         connection_manager=connection_manager,
         message_handler=message_handler,
         uri=websocket_uri,
-        max_in_flight_messages=max_in_flight_messages,
-        realtime=realtime
+        max_in_flight_messages=10,  # Default value
     )
     
     return server
 
 
-async def start_server_from_config(config: Dict[str, Any]):
+async def start_server_from_config(config: AppConfig):
     """
     Start a WebSocket server from configuration
     
     Args:
-        config: Server configuration dictionary
+        config: AppConfig object with structured configuration
     """
     # Create server from config
     server = await create_server_from_config(config)
     
-    # Start the server
-    # await server.start()
-    
     # Extract server parameters
-    server_config = config.get("server", {})
+    server_config = config.server
     websocket_uri = server.uri
     parts = websocket_uri.split("://")
     
@@ -112,11 +97,11 @@ async def start_server_from_config(config: Dict[str, Any]):
     host_port = parts[-1].split(":")
     host = host_port[0]
     port = int(host_port[1])
-    logger.info(f"WebSocket server will run on {host}:{port}")
+    
     # Configure ping interval based on mode
-    simulation_mode = config.get("simulation", {}).get("enabled", True)
-    ping_interval = None if simulation_mode else server_config.get("ping_interval", 20)
-    ping_timeout = None if simulation_mode else server_config.get("ping_timeout", 20)
+    simulation_mode = config.data_source.source_type == "backtest"  # Assume backtest = simulation mode
+    ping_interval = None if simulation_mode else server_config.ping_interval
+    ping_timeout = None if simulation_mode else server_config.ping_timeout
     
     logger.info(f"Starting {'Simulation' if simulation_mode else 'Live'} WebSocket server on {websocket_uri}")
     

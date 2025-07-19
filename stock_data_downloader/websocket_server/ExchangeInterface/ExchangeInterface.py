@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Any, List, Optional
+from typing import Awaitable, Callable, Dict, Any, List, Optional
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
 from stock_data_downloader.websocket_server.portfolio import Portfolio
@@ -32,7 +32,7 @@ class ExchangeInterface(ABC):
 
     @abstractmethod
     async def subscribe_to_orders(
-        self, order_ids: List[str], callback: Callable[[str, Any], None]
+        self, order_ids: List[str], callback: Callable[[str, Any], Awaitable[None]]
     ):
         pass
 

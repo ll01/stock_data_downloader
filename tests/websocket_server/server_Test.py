@@ -88,7 +88,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         # Test buy order
         buy_msg = {
             "action": "order",
-            "payload": {
+            "data": {
                 "ticker": "AAPL",
                 "quantity": 10,
                 "price": 155.0,
@@ -113,7 +113,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         buy_order_message = json.dumps(
             {
                 "action": "order",
-                "payload": {
+                "data": {
                     "ticker": "AAPL",
                     "quantity": 5,
                     "price": 100.5,
@@ -149,7 +149,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
             ]
           
             self.assertEqual(len(order_confirmations), 1)
-            confirmation_payload = order_confirmations[0]["payload"][0]
+            confirmation_payload = order_confirmations[0]["data"][0]
             self.assertEqual(confirmation_payload["status"], "FILLED")
             self.assertEqual(confirmation_payload["symbol"], "AAPL")
             self.assertEqual(confirmation_payload["quantity"], 5)
@@ -182,7 +182,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         )
 
         # Verify both clients received data
-        expected_call = json.dumps({"type": "test_event", "payload": test_data})
+        expected_call = json.dumps({"type": "test_event", "data": test_data})
         mock_ws1.send.assert_awaited_once_with(expected_call)
         mock_ws2.send.assert_awaited_once_with(expected_call)
 
@@ -205,7 +205,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         orders = [
             {
                 "action": "order",
-                "payload": {
+                "data": {
                     "ticker": "AAPL",
                     "quantity": 10,
                     "price": 150.0,
@@ -214,7 +214,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
             },
             {
                 "action": "order",
-                "payload": {
+                "data": {
                     "ticker": "AAPL",
                     "quantity": 5,
                     "price": 150.0,
@@ -223,7 +223,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
             },
             {
                 "action": "order",
-                "payload": {
+                "data": {
                     "ticker": "AAPL",
                     "quantity": 7,
                     "price": 150.0,
@@ -255,7 +255,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         # Place an order to change state
         buy_msg = {
             "action": "order",
-            "payload": {
+            "data": {
                 "ticker": "AAPL",
                 "quantity": 10,
                 "price": 155.0,
@@ -273,7 +273,7 @@ class TestWebSocketServerUnit(unittest.IsolatedAsyncioTestCase):
         assert "AAPL" in self.server_instance.trading_system.portfolio.positions
 
         # Reset simulation
-        await self.server_instance.reset_simulation()
+        await self.server_instance.reset()
 
         # Verify positions are cleared
         assert not self.server_instance.trading_system.portfolio.positions

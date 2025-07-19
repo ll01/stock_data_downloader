@@ -1,82 +1,71 @@
 import asyncio
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Awaitable
 
 # Import CCXT Pro for WebSocket support
 import ccxt
 
-from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
+from stock_data_downloader.models import CCXTDataSourceConfig, TickerData
+from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
+    DataSourceInterface,
+)
+
 
 class CCXTDataSource(DataSourceInterface):
-    def __init__(self, exchange_id: str, api_keys: Optional[Dict[str, str]] = None, tickers: List[str] = [], interval: str = '1m'):
-        """
-        Initialize CCXT data source for real-time and historical crypto data.
-        
-        Args:
-            exchange_id: ID of the exchange (e.g., 'binance', 'kraken')
-            api_keys: Dictionary of API keys for authentication (if required)
-            tickers: List of ticker symbols (e.g., ['BTC/USD', 'ETH/USD'])
-            interval: Timeframe for OHLCV data (e.g., '1m', '1h')
-        """
-        super().__init__(tickers, interval)
-        self.exchange_id = exchange_id
-        self.api_keys = api_keys or {}
-        self.interval = interval
-        self._exchange = self._initialize_exchange()
-        self._ws_task: Optional[asyncio.Task] = None
-        self._callback: Optional[Callable[[str, Any], None]] = None
-        self.current_prices: Dict[str, float] = {}
+    def __init__(self, cfg: CCXTDataSourceConfig):
+        super().__init__(tickers=cfg.tickers, interval=cfg.interval)
+        self.cfg = cfg
 
-    def _initialize_exchange(self) -> ccxt.Exchange:
-        """Initialize the CCXT exchange instance with WebSocket support."""
-        exchange_class = getattr(ccxt, self.exchange_id)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot',
-            },
-            **self.api_keys
-        })
-        return exchange
+        exchange_class = getattr(ccxt, cfg.exchange_id)
+        self._exchange = exchange_class(
+            {
+                "apiKey": cfg.credentials.get("api_key", ""),
+                "secret": cfg.credentials.get("secret", ""),
+                "password": cfg.credentials.get("password"),
+                "sandbox": cfg.sandbox,
+                "enableRateLimit": True,
+                "options": cfg.options or {},
+            }
+        )
 
-    async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> Dict:
+    async def get_historical_data(
+        self, tickers: List[str] = [], interval: str = ""
+    ) -> List[TickerData]:
         """
         Fetch historical OHLCV data from the exchange.
-        
+
         Args:
             tickers: List of ticker symbols (e.g., ['BTC/USD', 'ETH/USD'])
             interval: Timeframe for OHLCV data (e.g., '1m', '1h')
-        
+
         Returns:
             Dict[str, List[Dict[str, float]]]: Historical OHLCV data per ticker.
         """
         tickers = tickers or self.tickers
-        interval = interval or self.interval
-        historical_data = {}
+        historical_data = []
         subscriptions = [[ticker, interval] for ticker in tickers]
 
-       
         for ticker in tickers:
             try:
-                ohlcv = await  self._exchange.fetch_ohlcv(subscriptions) #type: ignore
-        
-                formatted_data = [
-                        {
-                            "timestamp": entry[0],
-                            "open": entry[1],
-                            "high": entry[2],
-                            "low": entry[3],
-                            "close": entry[4],
-                            "volume": entry[5]
-                        } for entry in ohlcv
-                    ]
-              
-                historical_data[ticker] = formatted_data
+                ohlcv = await self._exchange.fetch_ohlcv(subscriptions)  # type: ignore
+                for entry in ohlcv:
+                    historical_data.append(
+                        TickerData(
+                            ticker=ticker,
+                            timestamp=entry[0],
+                            open=entry[1],
+                            high=entry[2],
+                            low=entry[3],
+                            close=entry[4],
+                            volume=entry[5],
+                        )
+                    )
             except Exception as e:
                 print(f"Error fetching historical data for {ticker}: {e}")
 
         return historical_data
 
-    async def subscribe_realtime_data(self, callback: Callable[[str, Any], None]):
+    async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
         """
         Subscribe to real-time data via WebSocket and trigger the callback on updates.
         """
@@ -113,23 +102,23 @@ class CCXTDataSource(DataSourceInterface):
                 for ticker in self.tickers:
                     try:
                         # Subscribe to ticker updates (e.g., price, order book, trades)
-                        #TODO: if ccxt.base.errors.NotSupported error fall back to polling
-                        #TODO: why is 
-                        await self._exchange.watch_ohlcv(ticker) #type: ignore
-                        
+                        # TODO: if ccxt.base.errors.NotSupported error fall back to polling
+                        # TODO: why is
+                        await self._exchange.watch_ohlcv(ticker)  # type: ignore
+
                         # Get the latest ticker data and notify callback
-                        ticker_data = self._exchange.store['ticker'][ticker]
+                        ticker_data = self._exchange.store["ticker"][ticker]
                         if ticker_data:
                             payload = {
                                 "ticker": ticker,
-                                "open": ticker_data.get('open'),
-                                "high": ticker_data.get('high'),
-                                "low": ticker_data.get('low'),
-                                "close": ticker_data.get('close'),
-                                "volume": ticker_data.get('volume'),
-                                "timestamp": ticker_data.get('timestamp')
+                                "open": ticker_data.get("open"),
+                                "high": ticker_data.get("high"),
+                                "low": ticker_data.get("low"),
+                                "close": ticker_data.get("close"),
+                                "volume": ticker_data.get("volume"),
+                                "timestamp": ticker_data.get("timestamp"),
                             }
-                            await self._notify_callback("price_update", payload)
+                            await self._notify_callback(payload)
 
                     except Exception as e:
                         print(f"Error in WebSocket stream for {ticker}: {e}")
@@ -150,5 +139,4 @@ class CCXTDataSource(DataSourceInterface):
         Reset the data source by unsubscribing and reinitializing the exchange.
         """
         await self.unsubscribe_realtime_data()
-        self._exchange = self._initialize_exchange()
         print("CCXT data source has been reset.")

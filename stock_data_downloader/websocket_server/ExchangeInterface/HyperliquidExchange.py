@@ -1,61 +1,60 @@
+import asyncio
 from datetime import datetime, timezone
 import json
 import logging
 import os
 import threading
 import time
-from typing import Callable, List, Dict, Any, Optional
+from typing import Awaitable, Callable, List, Dict, Any, Optional
 import eth_account
 from hyperliquid.utils import constants
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils.types import Cloid, OrderUpdatesSubscription
-from hyperliquid.utils.signing import OrderRequest, OrderType
 from eth_account.signers.local import LocalAccount
 from hyperliquid.websocket_manager import WebsocketManager
 
+from stock_data_downloader.models import HyperliquidExchangeConfig
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
 )
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
-from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import OrderResult
+from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import (
+    OrderResult,
+)
 from stock_data_downloader.websocket_server.thread_cancel_helper import (
     _async_raise,
     find_threads_by_name,
 )
-from stock_data_downloader.websocket_server.portfolio import Portfolio
-
 
 # Define a directory for saving mappings
 MAPPING_DIR = "hyperliquid_order_mappings"
 
 
 class HyperliquidExchange(ExchangeInterface):
-    def __init__(
-        self, config: Optional[Dict[str, str]] = None, network: str = "mainnet"
-    ):
+    def __init__(self, config: HyperliquidExchangeConfig):
         self.config = config or {}
-        if "secret_key" not in self.config:
+        secret_key = self.config.api_config.get("secret_key")
+        if not secret_key:
             raise ValueError("secret_key must be provided in api_keys")
-        self.fetch_status_after_order = self.config.get("fetch_status_after_order", True)
-        
-        if "wallet_address" not in self.config:
+
+        wallet_address = self.config.api_config.get("wallet_address")
+        if not wallet_address:
             raise ValueError("wallet_addresss must be provided in config")
-        self.wallet_address  = self.config["wallet_address"]
-        
-        # Initialize portfolio
-        self._portfolio = Portfolio(initial_cash=0)
-
-
-
-
-        self.account: LocalAccount = eth_account.Account.from_key(
-            self.config["secret_key"]
+        self.wallet_address = wallet_address
+        self.secret_key = secret_key
+        self.fetch_status_after_order = self.config.api_config.get(
+            "fetch_status_after_order", True
         )
+
+        network = self.config.network
+
+        self.account: LocalAccount = eth_account.Account.from_key(secret_key)
         self.base_url = (
             constants.TESTNET_API_URL
             if network == "testnet"
             else constants.MAINNET_API_URL
         )
+
         self._exchange: Exchange = self._initialize_exchange()
         self.meta = self._initialize_metadata()
         self.sz_decimals = self._initialize_sz_decimals()
@@ -73,11 +72,6 @@ class HyperliquidExchange(ExchangeInterface):
 
     def _initialize_exchange(self) -> Exchange:
         return Exchange(wallet=self.account, base_url=self.base_url)
-        
-    @property
-    def portfolio(self) -> Portfolio:
-        """Return the portfolio associated with this exchange"""
-        return self._portfolio
 
     def _initialize_metadata(self):
         return self._exchange.info.meta()
@@ -124,7 +118,6 @@ class HyperliquidExchange(ExchangeInterface):
             self._order_mapping = {}
             # print(f"No mapping file found at {self._mapping_file}. Starting with empty mapping.") # Optional logging
 
-
     async def place_order(self, orders: List[Order]) -> List[OrderResult]:
         """Place multiple orders independently. Failures won’t stop the rest."""
         output: List[OrderResult] = []
@@ -132,14 +125,18 @@ class HyperliquidExchange(ExchangeInterface):
         for order in orders:
             # Build the Hyperliquid request payload
             is_buy = order.side == "BUY".casefold()
-            quantity = self._round_ammounts(order.quantity, order.symbol, is_quantity=True)
+            quantity = self._round_ammounts(
+                order.quantity, order.symbol, is_quantity=True
+            )
             price = self._round_ammounts(order.price, order.symbol, is_quantity=False)
-           
+
             cloid_obj = Cloid(order.cloid) if order.cloid else None
 
             try:
                 # Send just this one order
-                raw = self._exchange.market_open(order.symbol, is_buy, quantity, None, cloid=cloid_obj)
+                raw = self._exchange.market_open(
+                    order.symbol, is_buy, quantity, None, cloid=cloid_obj
+                )
                 # bulk_orders returns a dict with statuses under response.data.statuses[0]
                 status_entry = raw["response"]["data"]["statuses"][0]
 
@@ -158,8 +155,11 @@ class HyperliquidExchange(ExchangeInterface):
                 output.append(self.place_order_standardized(raw, cloid_obj))
 
             except Exception as exc:
-                logging.error(f"[place_order] failed for cloid={order.cloid}: {exc}", exc_info=True)
-                
+                logging.error(
+                    f"[place_order] failed for cloid={order.cloid}: {exc}",
+                    exc_info=True,
+                )
+
                 # For failed orders, set position_change and cash_impact to 0
                 result = OrderResult(
                     cloid=order.cloid or "",
@@ -176,24 +176,26 @@ class HyperliquidExchange(ExchangeInterface):
                 output.append(result)
 
                 # Return a “failure” OrderResult for this one
-                output.append(OrderResult(
-                    cloid=order.cloid or "",
-                    oid="",
-                    status="error",
-                    side=order.side,
-                    price=price,
-                    quantity=quantity,
-                    symbol=order.symbol,
-                    success=False,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    message=str(exc),
-                ))
+                output.append(
+                    OrderResult(
+                        cloid=order.cloid or "",
+                        oid="",
+                        status="error",
+                        side=order.side,
+                        price=price,
+                        quantity=quantity,
+                        symbol=order.symbol,
+                        success=False,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        message=str(exc),
+                    )
+                )
 
         return output
 
-    
-    
-    def place_order_standardized(self, raw: Dict, cloid: Optional[Cloid]) -> OrderResult:
+    def place_order_standardized(
+        self, raw: Dict, cloid: Optional[Cloid]
+    ) -> OrderResult:
         """
         Converts the raw Hyperliquid order response to a standardized OrderResult.
         Optionally queries latest status if configured.
@@ -218,10 +220,13 @@ class HyperliquidExchange(ExchangeInterface):
         if self.fetch_status_after_order and success:
             try:
                 if cloid:
-                    order_info = self._exchange.info.query_order_by_cloid(self.wallet_address, cloid)
+                    order_info = self._exchange.info.query_order_by_cloid(
+                        self.wallet_address, cloid
+                    )
                 else:
-                    order_info = self._exchange.info.query_order_by_oid(self.wallet_address, oid)
-        
+                    order_info = self._exchange.info.query_order_by_oid(
+                        self.wallet_address, oid
+                    )
 
                 metadata = order_info.get("order", {})
                 order_metadata = metadata.get("order", {})
@@ -229,10 +234,18 @@ class HyperliquidExchange(ExchangeInterface):
                 symbol = order_metadata.get("coin", symbol)
                 price = float(order_metadata.get("limitPx", price))
                 side_code = order_metadata.get("side", "").casefold()
-                side = "buy" if side_code == "b" else "sell" if side_code == "a" else "unknown"
+                side = (
+                    "buy"
+                    if side_code == "b"
+                    else "sell"
+                    if side_code == "a"
+                    else "unknown"
+                )
                 ts = metadata.get("statusTimestamp")
                 if ts:
-                    timestamp = datetime.fromtimestamp(ts / 1000, timezone.utc).isoformat()
+                    timestamp = datetime.fromtimestamp(
+                        ts / 1000, timezone.utc
+                    ).isoformat()
             except Exception as e:
                 logging.warning(f"Failed to fetch post-order status for oid={oid}: {e}")
 
@@ -247,8 +260,6 @@ class HyperliquidExchange(ExchangeInterface):
             success=success,
             timestamp=timestamp,
         )
-
-           
 
     async def get_balance(self) -> Dict[str, float]:
         """Fetch account balances."""
@@ -337,24 +348,28 @@ class HyperliquidExchange(ExchangeInterface):
             return False
 
     async def subscribe_to_orders(
-        self, order_ids: List[str], callback: Callable[[str, Any], None]
+        self, order_ids: List[str], callback: Callable[[str, Any], Awaitable[None]]
     ):
-        """Subscribe to real-time order updates."""
+        """
+        order_ids: optional whitelist; None or [] means "all mine".
+        callback signature: async def callback(kind: str, payload: dict)
+        """
+
+        def _hl_callback(raw: Dict[str, Any]) -> None:
+            """
+            Hyperliquid gives us raw order-update dicts.
+            Wrap them into our (kind, payload) convention and push.
+            """
+            awaitable = callback("order_update", raw)
+            asyncio.ensure_future(awaitable)
+
         self._ws.start()
-        for thread in [self._ws.ping_sender]:
-            if thread and isinstance(thread, threading.Thread) and thread.is_alive():
-                thread.daemon = True
         subscription: OrderUpdatesSubscription = {
             "type": "orderUpdates",
             "user": self.account.address,
         }
-        sub_id = self._ws.subscribe(subscription, callback=callback)
-        self._subscriptions.append(
-            (
-                subscription,
-                sub_id,
-            )
-        )
+        sub_id = self._ws.subscribe(subscription, callback=_hl_callback)
+        self._subscriptions.append((subscription, sub_id))
 
     async def unsubscribe_to_orders(self, order_ids: List[str]):
         """Unsubscribe from real-time data."""
@@ -420,7 +435,9 @@ class RobustWebsocketClient:
 
     def start(self):
         self._running = True
-        self._thread = threading.Thread(target=self._run_loop, name="ws_reconnector", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run_loop, name="ws_reconnector", daemon=True
+        )
         self._thread.start()
 
     def _run_loop(self):
@@ -428,13 +445,17 @@ class RobustWebsocketClient:
             try:
                 self._ws = WebsocketManager(self.base_url)
                 self._ws.start()
-                sub_id = self._ws.subscribe(self.subscribe_payload, callback=self.callback)
+                sub_id = self._ws.subscribe(
+                    self.subscribe_payload, callback=self.callback
+                )
                 logging.info(f"[WS] Subscribed with ID {sub_id}")
                 while self._ws.is_alive():
                     time.sleep(1)
                 raise Exception("WebSocket thread died")
             except Exception as e:
-                logging.warning(f"[WS] Disconnected or failed: {e}. Reconnecting in {self.reconnect_interval}s")
+                logging.warning(
+                    f"[WS] Disconnected or failed: {e}. Reconnecting in {self.reconnect_interval}s"
+                )
                 time.sleep(self.reconnect_interval)
 
     def stop(self):

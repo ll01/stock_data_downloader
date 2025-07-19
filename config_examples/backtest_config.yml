@@ -1,0 +1,38 @@
+# Example configuration for backtest data source
+data_source:
+  source_type: backtest
+  backtest_model_type: heston
+  start_prices:
+    GOOG: 2800.0
+    MSFT: 300.0
+    AAPL: 150.0
+  timesteps: 252  # One year of daily data
+  interval: 0.00396825  # 1/252 (daily)
+  seed: 42
+  ticker_configs:
+    GOOG:
+      heston:
+        kappa: 1.0
+        theta: 0.04
+        xi: 0.2
+        rho: -0.5
+    MSFT:
+      heston:
+        kappa: 1.2
+        theta: 0.05
+        xi: 0.25
+        rho: -0.6
+    AAPL:
+      heston:
+        kappa: 1.1
+        theta: 0.03
+        xi: 0.22
+        rho: -0.55
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  ping_interval: 20
+  ping_timeout: 20
+
+initial_cash: 100000.0

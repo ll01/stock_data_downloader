@@ -72,7 +72,7 @@ async def test_backtest_data_source_heston_streaming(heston_config_data):
         assert event_type == "price_update"
         assert isinstance(data, dict) # It's a dict because of model_dump()
         assert "ticker" in data
-        assert "price" in data
+        assert "close" in data
         assert "timestamp" in data
         assert "volume" in data
 
@@ -92,7 +92,7 @@ async def test_backtest_data_source_gbm_streaming(gbm_config_data):
         assert event_type == "price_update"
         assert isinstance(data, dict) # It's a dict because of model_dump()
         assert "ticker" in data
-        assert "price" in data
+        assert "close" in data
         assert "timestamp" in data
         assert "volume" in data
 

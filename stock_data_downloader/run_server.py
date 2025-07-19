@@ -4,9 +4,16 @@ import logging
 from typing import Dict, Any
 
 from stock_data_downloader.config.logging_config import setup_logging
-from stock_data_downloader.data_processing.TickerStats import TickerStats
 from stock_data_downloader.etl.parquet_etl import load_stock_stats
-from stock_data_downloader.websocket_server.ConfigHandler import ConfigHandler
+from stock_data_downloader.models import (
+    AppConfig, 
+    DataSourceConfig, 
+    BacktestDataSourceConfig,
+    TickerConfig,
+    HestonConfig,
+    GBMConfig
+)
+from stock_data_downloader.websocket_server.factories.ConfigFactory import ConfigFactory
 from stock_data_downloader.websocket_server.factories.serverFactory import start_server_from_config
 
 
@@ -63,46 +70,52 @@ async def main():
     
     # Load configuration
     try:
-        config = ConfigHandler.load_config(args.config)
+        # Load configuration using ConfigFactory
+        config = ConfigFactory.load_config(args.config)
         
-        # Check if we're in simulation mode with Brownian data source
-        simulation_enabled = config.get("simulation", {}).get("enabled", True)
-        data_source_name: str = config.get("data_source", {}).get("name", None)
-        ticker_configs = config.get("data_source", {}).get("ticker_configs", {})
-        
-        if not data_source_name:
-            logging.error("No data source name provided in configuration.")
-            raise ValueError("No data source name provided in configuration.")
-        
-        # Initialize stats and start_prices
-        stats: Dict[str, TickerStats] = {}
-        start_prices: Dict[str, float] = {}
-        
-        # If using backtest data source, determine data source method
-        if simulation_enabled and data_source_name.lower() == "backtest":
-            # Check if we have a valid simulation data file
+        # Handle command-line overrides for backtest data sources
+        if (config.data_source.source_type == "backtest" and 
+            isinstance(config.data_source.config, BacktestDataSourceConfig)):
+            
+            backtest_config = config.data_source.config
+            
+            # Check if we have a valid simulation data file to override config
             if is_valid_file_path(args.sim_data_file):
                 logging.info(f"Loading stock statistics from {args.sim_data_file}")
                 stats = load_stock_stats(args.sim_data_file)
+                
+                # Generate ticker configs from stats
+                ticker_configs = {}
+                for ticker, stat in stats.items():
+                    if backtest_config.backtest_model_type == "heston":
+                        ticker_configs[ticker] = TickerConfig(
+                            heston=HestonConfig(
+                                kappa=stat.kappa or 1.0,
+                                theta=stat.theta or 0.04,
+                                xi=stat.xi or 0.2,
+                                rho=stat.rho or -0.5
+                            )
+                        )
+                    elif backtest_config.backtest_model_type == "gbm":
+                        ticker_configs[ticker] = TickerConfig(
+                            gbm=GBMConfig(
+                                mean=stat.mean,
+                                sd=stat.sd
+                            )
+                        )
+                
+                # Generate start prices
                 start_prices = generate_basic_start_prices(args.start_price, stats)
-                config["data_source"]["stats"] = stats
-                config["data_source"]["start_prices"] = start_prices
+                
+                # Update the backtest config
+                backtest_config.ticker_configs = ticker_configs
+                backtest_config.start_prices = start_prices
             
-            # Otherwise, check if we have ticker configs
-            elif ticker_configs:
-                logging.info("Using ticker configs from configuration to determine start prices.")
-                # DataSourceFactory will handle TickerConfig creation from ticker_configs
-                # We just need to ensure start_prices are available
-                start_prices = config.get("data_source", {}).get("start_prices", {})
-                if not start_prices:
-                    logging.warning("No start_prices found in config for ticker_configs. Generating basic start prices.")
-                    start_prices = generate_basic_start_prices(args.start_price, ticker_configs)
-                config["data_source"]["start_prices"] = start_prices
-            
-            # Neither valid file nor ticker configs available
-            else:
-                logging.error("No valid simulation data file or ticker configs provided for backtest mode.")
-                raise ValueError("No valid simulation data file or ticker configs provided.")
+            # Otherwise, check if we need to generate start prices from existing ticker configs
+            elif backtest_config.ticker_configs and not backtest_config.start_prices:
+                logging.warning("No start_prices found in config for ticker_configs. Generating basic start prices.")
+                start_prices = generate_basic_start_prices(args.start_price, backtest_config.ticker_configs)
+                backtest_config.start_prices = start_prices
         
         # Start the server
         logging.info("Starting server...")

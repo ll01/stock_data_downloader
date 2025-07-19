@@ -66,7 +66,7 @@ class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
         async with websockets.connect(self.server_uri) as websocket:
             trade_message = {
                 "action": "order",
-                "payload": {
+                "data": {
                     "ticker": "AAPL",
                     "quantity": 10,
                     "price": 150,
@@ -94,7 +94,7 @@ class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(order_confirmations, "Did not receive order confirmation")
             
             
-            confirmation_payload = order_confirmations["payload"][0]
+            confirmation_payload = order_confirmations["data"][0]
             self.assertEqual(confirmation_payload["status"], "FILLED")
             self.assertEqual(confirmation_payload["symbol"], "AAPL")
             self.assertEqual(confirmation_payload["quantity"], 10)
@@ -119,14 +119,14 @@ class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
             response = await websocket.recv()
             response_data = json.loads(response)
             self.assertEqual(response_data["type"], "error")
-            self.assertEqual(response_data["payload"]["type"], "invalid_json")
-            self.assertEqual(response_data["payload"]["error_count"], 1)
+            self.assertEqual(response_data["data"]["type"], "invalid_json")
+            self.assertEqual(response_data["data"]["error_count"], 1)
             
             # Second invalid message should increase error count
             await websocket.send(invalid_message)
             response = await websocket.recv()
             response_data = json.loads(response)
-            self.assertEqual(response_data["payload"]["error_count"], 2)
+            self.assertEqual(response_data["data"]["error_count"], 2)
             
             # After 5 errors, connection should be closed
             for i in range(3, 7):
@@ -134,7 +134,7 @@ class TestWebSocketServerIntegration(unittest.IsolatedAsyncioTestCase):
                 if i < 6:
                     response = await websocket.recv()
                     response_data = json.loads(response)
-                    self.assertEqual(response_data["payload"]["error_count"], i)
+                    self.assertEqual(response_data["data"]["error_count"], i)
                 else:
                     # On the 6th error, connection should be closed
                     with self.assertRaises(ConnectionClosed):

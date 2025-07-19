@@ -28,7 +28,7 @@ def test_trading_system():
 async def test_valid_buy_order(message_handler, test_trading_system):
     message = {
         "action": "order",
-        "payload": {
+        "data": {
             "ticker": "AAPL",
             "quantity": 10,
             "price": 150.0,
@@ -48,7 +48,7 @@ async def test_valid_buy_order(message_handler, test_trading_system):
 async def test_valid_sell_order(message_handler, test_trading_system):
     message = {
         "action": "order",
-        "payload": {
+        "data": {
             "ticker": "AAPL",
             "quantity": 5,
             "price": 150.0,
@@ -68,7 +68,7 @@ async def test_valid_sell_order(message_handler, test_trading_system):
 async def test_invalid_action(message_handler, test_trading_system):
     message = {
         "action": "invalid_action",
-        "payload": {"ticker": "AAPL", "quantity": 10, "price": 150.0},
+        "data": {"ticker": "AAPL", "quantity": 10, "price": 150.0},
     }
     result = await message_handler.handle_message(
         message,
@@ -95,7 +95,7 @@ async def test_reset_action(message_handler, test_trading_system):
 async def test_missing_ticker(message_handler, test_trading_system):
     message = {
         "action": "order",
-        "payload": {"quantity": 10, "price": 150.0, "order_type": "buy"},
+        "data": {"quantity": 10, "price": 150.0, "order_type": "buy"},
     }
     result = await message_handler.handle_message(
         message,
@@ -111,7 +111,7 @@ async def test_missing_ticker(message_handler, test_trading_system):
 async def test_zero_quantity(message_handler, test_trading_system):
     message = {
         "action": "order",
-        "payload": {
+        "data": {
             "ticker": "AAPL",
             "quantity": 0,
             "price": 150.0,

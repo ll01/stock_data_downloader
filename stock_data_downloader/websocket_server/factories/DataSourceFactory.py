@@ -1,70 +1,63 @@
 import logging
-from stock_data_downloader.models import TickerConfig
-from stock_data_downloader.websocket_server.DataSource.BrownianMotionDataSource import BrownianMotionDataSource
+from typing import Dict, Any, Optional
+from stock_data_downloader.models import (
+    DataSourceConfig,
+    BacktestDataSourceConfig,
+    HyperliquidDataSourceConfig
+)
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
 from stock_data_downloader.websocket_server.DataSource.HyperliquidDataSource import HyperliquidDataSource
 
-
-
-from typing import Any, Dict
-
 logger = logging.getLogger(__name__)
 
 class DataSourceFactory:
-    """Factory class for creating data source instances based on configuration"""
-
+    """Factory for creating data source instances"""
+    
     @staticmethod
-    def create_data_source(config: Dict[str, Any]) -> DataSourceInterface:
+    def create_data_source(config: DataSourceConfig) -> DataSourceInterface:
         """
-        Create a data source instance based on the provided configuration
-
+        Create a data source instance based on configuration
+        
         Args:
-            config: Dictionary with data source configuration
-
-        Returns:
-            DataSourceInterface implementation
-
-        Raises:
-            ValueError: If the data source type is not supported
-        """
-       
-        source_name = config.get("name")
-        
-        if not source_name:
-            logger.error("Data source name is required in the configuration.")
-            raise ValueError("Data source name is required in the configuration.")
-        if source_name == "backtest":
-            logger.info("Creating BacktestDataSource")
+            config: DataSourceConfig object
             
-            ticker_configs_raw: Dict[str, Dict[str, Any]] = config.get("ticker_configs", {})
-            ticker_configs = {
-                ticker: TickerConfig(**config) for ticker, config in ticker_configs_raw.items()
-            }
-
-            # Create and return BacktestDataSource
+        Returns:
+            DataSourceInterface instance
+        """
+        logger.info(f"Creating data source with type: {config.source_type}")
+        source_type = config.source_type
+        backtest_config = config.config
+        if source_type == "backtest":
+            if not isinstance(backtest_config, BacktestDataSourceConfig):
+                raise ValueError("Expected BacktestDataSourceConfig for backtest data source")
+                
+            backtest_config = backtest_config
+            
+            logger.info(f"Creating BacktestDataSource with {backtest_config.backtest_model_type} model")
+            
             return BacktestDataSource(
-                ticker_configs=ticker_configs,
-                global_config=config
+                ticker_configs=backtest_config.ticker_configs,
+                backtest_config=backtest_config
             )
-        elif source_name == "hyperliquid":
-            logger.info("Creating HyperliquidDataSource")
-
-            # Extract HyperliquidDataSource specific settings
-            api_config = config.get("api_config", {})
-            network = config.get("network", "mainnet")
-            tickers = config.get("tickers", [])
-
-            # Create and return HyperliquidDataSource
+            
+        elif source_type == "hyperliquid":
+            if not isinstance(backtest_config, HyperliquidDataSourceConfig):
+                raise ValueError("Expected HyperliquidDataSourceConfig for Hyperliquid data source")
+                
+            hyperliquid_config = backtest_config
+            
+            logger.info(f"Creating HyperliquidDataSource for {len(hyperliquid_config.tickers)} tickers")
+            
             return HyperliquidDataSource(
-                config=api_config,
-                network=network,
-                tickers=tickers
+                config=hyperliquid_config.api_config,
+                network=hyperliquid_config.network,
+                tickers=hyperliquid_config.tickers,
+                interval=hyperliquid_config.interval
             )
-        
-
+            
         else:
             available_types = ["backtest", "hyperliquid"]
-            err_msg = f"Data source type '{source_name}' not supported. Available types: {', '.join(available_types)}"
+            err_msg = f"Data source type '{source_type}' not supported. Available types: {', '.join(available_types)}"
             logger.error(err_msg)
             raise ValueError(err_msg)

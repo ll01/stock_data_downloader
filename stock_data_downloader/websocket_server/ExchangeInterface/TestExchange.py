@@ -19,7 +19,7 @@ class TestExchange(ExchangeInterface):
     __test__ = False  # Prevent pytest from collecting this as a test case
     """Test exchange implementation that uses a Portfolio for testing without real market connection"""
 
-    def __init__(self, portfolio: Portfolio, simulation_mode: bool = True):
+    def __init__(self, portfolio: Portfolio):
         """
         Initialize the test exchange
 
@@ -28,7 +28,6 @@ class TestExchange(ExchangeInterface):
             simulation_mode: Whether to run in simulation mode (vs live mode)
         """
 
-        self.simulation_mode = simulation_mode
         self.order_callbacks = {}
         self.active_orders = {}
         self.closed_orders = {}
@@ -254,15 +253,13 @@ class TestExchange(ExchangeInterface):
         order_id = update_data.get("id", "")
 
         for sub_id, sub_info in self.subscription_callbacks.items():
-            order_ids = sub_info["order_ids"]
             callback = sub_info["callback"]
-
-            # If subscription is for all orders or includes this order
-            if not order_ids or order_id in order_ids:
-                try:
-                    # Execute callback in the event loop
-                    callback(update_type, update_data)
-                except Exception as e:
-                    logger.error(
-                        f"Error in order update callback (sub_id {sub_id}): {e}"
-                    )
+            
+            try:
+                # Execute callback in the event loop
+                callback(update_type, update_data)
+            except Exception as e:
+                logger.error(
+                    f"Error in order update callback (sub_id {sub_id}): {e}"
+                )
+            

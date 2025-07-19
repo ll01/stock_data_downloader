@@ -1,77 +1,130 @@
-from typing import Dict, Any, List, AsyncGenerator, Optional
-from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
-from stock_data_downloader.data_processing.simulation import generate_heston_ticks, generate_gbm_ticks
-from stock_data_downloader.models import TickerConfig
-from stock_data_downloader.data_processing.TickerStats import TickerStats
+from typing import Dict, Any, List, AsyncGenerator, Optional, Callable, cast, Awaitable
+from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
+    DataSourceInterface,
+)
+from stock_data_downloader.data_processing.simulation import (
+    GBMSimulator,
+    HestonSimulator,
+    ISimulator,
+)
+from stock_data_downloader.models import (
+    BacktestDataSourceConfig,
+    TickerConfig,
+    TickerData,
+)
+
 import logging
 logger = logging.getLogger(__name__)
 
-def convert_to_ticker_stats(ticker_config: TickerConfig) -> TickerStats:
-    """Convert TickerConfig to TickerStats based on the model type"""
-    if ticker_config.gbm:
-        return TickerStats(
-            mean=ticker_config.gbm.mean,
-            sd=ticker_config.gbm.sd
-        )
-    elif ticker_config.heston:
-        # For Heston, we use mean=0 since it's not used in the model
-        return TickerStats(mean=0, sd=0)
-    else:
-        raise ValueError("TickerConfig must have either gbm or heston config")
 
 class BacktestDataSource(DataSourceInterface):
-    def __init__(self, ticker_configs: Dict[str, TickerConfig], global_config: dict):
+    def __init__(
+        self, ticker_configs: Dict[str, TickerConfig], backtest_config: BacktestDataSourceConfig
+    ):
         super().__init__(tickers=list(ticker_configs.keys()))
-        self.config = global_config
+        self.backtest_config = backtest_config
         self.ticker_configs = ticker_configs
-        self.generator: Optional[AsyncGenerator] = None
+        self.simulator: ISimulator
         self._callback = None
-        
-    async def subscribe_realtime_data(self, callback):
-        self._callback = callback
-        backtest_model_type = self.config.get('backtest_data_type', 'heston')
-        
-        # Initialize current prices from config
-        for ticker, price in self.config['start_prices'].items():
-            self.current_prices[ticker] = price
-            
-        if backtest_model_type == 'heston':
-            self.generator = generate_heston_ticks(
-                stats={k: v.heston.model_dump() for k,v in self.ticker_configs.items() if v.heston},
-                start_prices=self.config['start_prices'],
-                timesteps=self.config['timesteps'],
-                dt=self.config['interval'],
-                seed=self.config.get('seed')
-            )
-        elif backtest_model_type == 'gbm' or backtest_model_type == 'brownian':
-            # Convert TickerConfig to TickerStats
-            stats = {k: convert_to_ticker_stats(v) for k,v in self.ticker_configs.items()}
-            self.generator = generate_gbm_ticks(
-                stats=stats,
-                start_prices=self.config['start_prices'],
-                timesteps=self.config['timesteps'],
-                interval=self.config['interval'],
-                seed=self.config.get('seed')
-            )
-        else:
-            avalable_types = ["heston", "gbm"]
-            logger.error(f"Unsupported backtest model type: {backtest_model_type}. Available types: {', '.join(avalable_types)}")
-            raise ValueError(f"Unsupported backtest model type: {backtest_model_type}")
-            
-        if self.generator:
-            async for tick_batch in self.generator:
-                # Update current prices for each tick in batch
-                for tick in tick_batch:
-                    self.current_prices[tick['ticker']] = tick['close']
-                    
-                # Notify callback with the batch if available
-                if callable(self._callback):
-                    self._callback(tick_batch)
+        self._running = False
+        self._generator_task = None
 
-    async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> List[Dict[str, Any]]:
+    async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
+        """
+        Subscribe to simulated real-time data from the backtest generator.
+
+        This method sets up the data generation based on the configured model type
+        and streams the data to the provided callback function. It uses the standardized
+        callback mechanism to ensure consistent behavior with other data sources.
+
+        The callback will receive data in one of two formats:
+        1. A list of dictionaries for price updates, where each dictionary contains:
+           - ticker: The ticker symbol
+           - close: The closing price
+           - timestamp: ISO format timestamp
+           - Additional OHLCV fields as available
+
+        2. A dictionary with "type": "simulation_end" when the simulation completes,
+           optionally with an "error" field if the simulation ended due to an error.
+
+        Args:
+            callback: Async function to call when new data is available.
+                     The callback will receive data in a standardized format.
+        """
+        self._callback = callback
+
+    
+        for ticker, price in self.backtest_config.start_prices.items():
+            self.current_prices[ticker] = price
+
+        logger.info(
+            f"Starting backtest simulation with model type: {self.backtest_config.backtest_model_type}"
+        )
+
+        try:
+            # Set up the appropriate generator based on model type
+            if self.backtest_config.backtest_model_type == "heston":
+                self.simulator = HestonSimulator(
+                    stats=self.backtest_config.ticker_configs,
+                    start_prices=self.current_prices,
+                    dt=self.backtest_config.interval,
+                    seed=self.backtest_config.seed,
+                )
+            elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
+                # Convert TickerConfig to TickerStats
+
+                self.simulator = GBMSimulator(
+                    stats=self.backtest_config.ticker_configs,  # Dict[str, TickerConfig]
+                    start_prices=self.backtest_config.start_prices,
+                    dt=self.backtest_config.interval,
+                    seed=self.backtest_config.seed,
+                )
+            else:
+                available_types = ["heston", "gbm"]
+                logger.error(
+                    "Unsupported backtest model type: "
+                    f"{self.backtest_config.backtest_model_type}. ",
+                    f"Available types: {', '.join(available_types)}"
+                )
+                raise ValueError(
+                    "Unsupported backtest model type: ",
+                    f"{self.backtest_config.backtest_model_type}"
+                )
+
+            # Process data from the generator
+            max_time_steps = self.backtest_config.timesteps
+            try:
+                logger.info(f"Starting data generation for {len(self.tickers)} tickers")
+                for _ in range(max_time_steps):
+                    tick_batch =  self.simulator.next_bars()
+                    await self._notify_callback("price_update", tick_batch)
+                    
+
+                # Signal the end of the simulation with a standardized message
+                logger.info("Backtest simulation completed successfully")
+                self.simulator.reset()
+                await self._notify_callback("simulation_end", None)
+
+            except Exception as e:
+                logger.error(f"Error in backtest data generation: {e}", exc_info=True)
+                # Ensure we still signal simulation end even on error
+                await self._notify_callback("simulation_end", { "error": str(e)})
+        except Exception as e:
+            logger.error(f"Failed to initialize backtest generator: {e}", exc_info=True)
+            raise
+
+    async def get_historical_data(
+        self, tickers: List[str] = [], interval: str = ""
+    ) -> List[TickerData]:
         # BacktestDataSource does not provide historical data directly
         return []
 
     async def unsubscribe_realtime_data(self):
-        self.generator = None
         self._callback = None
+
+    async def reset(self):
+        """Reset the backtest data source to start a new simulation"""
+        old_callback = self._callback
+        await self.unsubscribe_realtime_data()
+        if old_callback:
+            await self.subscribe_realtime_data(old_callback)

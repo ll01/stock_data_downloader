@@ -1,9 +1,14 @@
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Set
-from websockets import ServerConnection
+from typing import Any, Dict, List, Optional, Set, Union
+
 import websockets
+from websockets import ServerConnection
+
+from stock_data_downloader.models import TickerData
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -14,87 +19,81 @@ class ConnectionManager:
         self.max_in_flight_messages = max_in_flight_messages
         self.MAX_RETRIES = 10
 
-
-    async def add_connection(self, websocket: ServerConnection):
+    async def add_connection(self, websocket: ServerConnection) -> None:
         self.connections.add(websocket)
-        queue = asyncio.Queue(maxsize=self.max_in_flight_messages)
-        self.connection_queues[websocket] = queue
-        self.error_counts[websocket] = 0  # Initialize error count
-        # Start a sender task for this connection
-        asyncio.create_task(self._sender_task(websocket, queue))
-        logging.info(f"New connection from {websocket.remote_address}")
+        self.connection_queues[websocket] = asyncio.Queue(
+            maxsize=self.max_in_flight_messages
+        )
+        self.error_counts[websocket] = 0
+        asyncio.create_task(self._sender_task(websocket))
+        logger.info(f"New connection from {websocket.remote_address}")
 
-    async def remove_connection(self, websocket: ServerConnection):
-        if websocket in self.connections:
-            if websocket in self.connection_queues:
-                # You might want to await the queue to empty or cancel pending tasks
-                del self.connection_queues[websocket]
-            if websocket in self.error_counts:
-                del self.error_counts[websocket]
-            self.connections.remove(websocket)
-            logging.info(f"Connection from {websocket.remote_address} closed")
+    async def remove_connection(self, websocket: ServerConnection) -> None:
+        self.connections.discard(websocket)
+        self.connection_queues.pop(websocket, None)
+        self.error_counts.pop(websocket, None)
+        logger.info(f"Connection from {websocket.remote_address} closed")
 
-    async def _sender_task(self, websocket: ServerConnection, queue: asyncio.Queue):
+
+    async def _sender_task(self, websocket: ServerConnection) -> None:
+        queue = self.connection_queues[websocket]
         while True:
             try:
-                message = await queue.get()
-                await websocket.send(message)
+                message: Dict[str, Any] = await queue.get()
+                json_message = json.dumps(message, default=str)
+                await websocket.send(json_message)
                 queue.task_done()
             except websockets.ConnectionClosed:
                 await self.remove_connection(websocket)
                 break
+            except Exception:
+                logger.exception("Unexpected error in sender task")
+                await self.remove_connection(websocket)
+                break
+            await asyncio.sleep(0.0001)
 
     async def send(
-        self, websocket: ServerConnection, type: str, payload: Any = None, retry_count=0
-    ):
-        msg = {"type": type}
-        if payload is not None:
-            msg["payload"] = payload
-        try:
-            # Add message to the client-specific queue
-            await self.connection_queues[websocket].put(json.dumps(msg))
-        except asyncio.QueueFull:
-            if retry_count >= self.MAX_RETRIES:
-                # Handle queue overflow (e.g., disconnect slow client)
-                logging.warning("Client message queue full; closing connection")
-                await self.remove_connection(websocket)
-                return
-            await asyncio.sleep(10)
-            retry_count += 1
-            await self.send(websocket, type, payload, retry_count)
+        self,
+        websocket: ServerConnection,
+        type: str,
+        payload: Optional[Union[Dict[str, Any], List[Any]]] = None,
+    ) -> None:
+        """
+        Enqueue a native-Python message. Handles both raw dictionaries and TickerData objects.
+        """
+        if websocket not in self.connection_queues:
+            return  # already gone
 
-    def increment_error_count(self, websocket: ServerConnection):
-        if websocket in self.error_counts:
-            self.error_counts[websocket] += 1
-        else:
-            self.error_counts[websocket] = 1
+        msg: Dict[str, Any] = {"type": type}
+        if payload is not None:
+            # Convert any TickerData objects to dictionaries
+            if isinstance(payload, list) and type == "price_update":
+                msg["data"] = [
+                    item.model_dump(mode="json") if isinstance(item, TickerData) else item
+                    for item in payload
+                ]
+            elif isinstance(payload, TickerData):
+                msg["data"] = payload.model_dump(mode="json")
+            else:
+                msg["data"] = payload
+        try:
+            await self.connection_queues[websocket].put(msg)
+        except asyncio.QueueFull:
+            logger.warning("Client queue full; closing connection")
+            await self.remove_connection(websocket)
+
+    def increment_error_count(self, websocket: ServerConnection) -> int:
+        self.error_counts[websocket] = self.error_counts.get(websocket, 0) + 1
         return self.error_counts[websocket]
 
-    def get_error_count(self, websocket: ServerConnection) -> int:
-        return self.error_counts.get(websocket, 0)
-
-    async def broadcast_to_all(self, type: str, payload: Any = None):
-        """Send data to all connected clients."""
+    async def broadcast_to_all(
+        self, type: str, payload: Optional[Any] = None
+    ) -> None:
         if not self.connections:
             return
 
-        tasks = []
-        disconnected = set()
-
-        for websocket in self.connections:
-            try:
-                # Create a task for each send operation
-                task = asyncio.create_task(self.send(websocket, type, payload))
-                tasks.append(task)
-            except Exception as e:
-                logging.error(f"Error creating send task: {e}")
-                disconnected.add(websocket)
-
-        # Wait for all send tasks to complete
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Remove disconnected clients
-        for websocket in disconnected:
-            if websocket in self.connections:
-                await self.remove_connection(websocket)
+        tasks = [
+            asyncio.create_task(self.send(ws, type, payload))
+            for ws in list(self.connections)
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)

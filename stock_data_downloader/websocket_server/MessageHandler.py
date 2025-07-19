@@ -30,8 +30,6 @@ class MessageHandler:
         self,
         data: Dict[str, Any],
         trading_system: TradingSystem,
-        simulation_running: bool,
-        realtime: bool,
     ) -> HandleResult:
         handle_result = self._send_rejection(data, reason="invalid action")
         action = data.get("action")
@@ -39,13 +37,9 @@ class MessageHandler:
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
 
         elif action in ["final_report", "report"]:
-            if simulation_running:
-                logging.warning(
-                    "Client requested final report while simulation potentially still running?"
-                )
             balance_info = await trading_system.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)
-            if not realtime:
+            if trading_system.portfolio:
                 final_value = trading_system.portfolio.cash
                 total_return = trading_system.portfolio.calculate_total_return()
                 final_portfolio_state = vars(trading_system.portfolio)
@@ -63,7 +57,7 @@ class MessageHandler:
             handle_result = HandleResult(result_type="final_report", payload=payload)
         elif action == "order":
             handle_result = await self.handle_order(
-                data["payload"], trading_system
+                data["data"], trading_system
             )
         elif action == "get_order_status":
             order_id_to_query = data.get("order_id")
@@ -179,7 +173,7 @@ class MessageHandler:
             return self._send_rejection(data, reason=f"Error placing order: {e}")
 
     async def process_order_update(
-        self, update_data: dict, realtime: bool, portfolio: Portfolio
+        self, update_data: dict,  portfolio: Portfolio
     ):
         logging.debug(f"Received order update: {update_data}")
 
@@ -200,9 +194,8 @@ class MessageHandler:
             "timestamp": order.get("statusTimestamp"),
             "cloid": order.get("cloid", ""),
             "exchange_id": order.get("oid", ""),
+            "portfolio": portfolio
         }
-        if not realtime:
-            payload["portfolio"] = portfolio
         return HandleResult(result_type=trade_type, payload=payload)
 
     def _send_execution(
@@ -212,22 +205,25 @@ class MessageHandler:
         price,
         action_type,
         timestamp,
-        realtime,
         portfolio,
         cloid=None,
     ):
+        """
+        Send trade execution confirmation with unified handling.
+        
+        This method provides consistent trade execution responses
+        regardless of data source type.
+        """
         payload = {
             "status": "success",
             "action": action_type,
             "ticker": data["ticker"],
             "quantity": data["quantity"],
             "price": price,
-            "portfolio": {},
+            "portfolio": portfolio,  # Always include portfolio information
             "timestamp": (timestamp + timedelta(minutes=1)).isoformat(),
             "cloid": cloid,
         }
-        if not realtime:
-            payload["portfolio"] = portfolio
         return HandleResult(result_type="trade_execution", payload=payload)
 
     def _send_rejection(self, data: Dict, reason: str, field: str | None = None):

@@ -12,7 +12,7 @@ def setup_logging(log_level: Optional[str] = None):
     log_level = log_level.upper()
     logging.basicConfig(
         level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format="%(asctime)s - %(levelname)s - %(name)s:%(lineno)d - %(message)s",
         handlers=[
             logging.StreamHandler(),  # Log to console
             logging.FileHandler("app.log", encoding="utf-8"),  # Log to a file

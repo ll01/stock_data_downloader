@@ -72,6 +72,9 @@ class WebSocketServer:
                     break
                 except websockets.ConnectionClosedError as e:
                     logger.exception(f"WebSocket closed with error: {e}", exc_info=True)
+                    logger.warning(f"latency: {websocket.latency}")
+                    logger.warning(f"ping timeout: {websocket.ping_timeout}")
+                    logger.warning(f"ping  interval: {websocket.ping_interval}")
                     break
 
                 logger.info(f"Received message: {message}")

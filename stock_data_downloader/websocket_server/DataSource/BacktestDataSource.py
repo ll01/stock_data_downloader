@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, List, AsyncGenerator, Optional, Callable, cast, Awaitable
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
     DataSourceInterface,
@@ -52,11 +53,16 @@ class BacktestDataSource(DataSourceInterface):
                      The callback will receive data in a standardized format.
         """
         self._callback = callback
+        asyncio.create_task(self.stream_price_updates())
 
     
+
+        
+    async def stream_price_updates(self):
+        
         for ticker, price in self.backtest_config.start_prices.items():
             self.current_prices[ticker] = price
-
+            
         logger.info(
             f"Starting backtest simulation with model type: {self.backtest_config.backtest_model_type}"
         )
@@ -98,6 +104,7 @@ class BacktestDataSource(DataSourceInterface):
                 for _ in range(max_time_steps):
                     tick_batch =  self.simulator.next_bars()
                     await self._notify_callback("price_update", tick_batch)
+                    await asyncio.sleep(0)
                     
 
                 # Signal the end of the simulation with a standardized message
@@ -112,7 +119,7 @@ class BacktestDataSource(DataSourceInterface):
         except Exception as e:
             logger.error(f"Failed to initialize backtest generator: {e}", exc_info=True)
             raise
-
+        
     async def get_historical_data(
         self, tickers: List[str] = [], interval: str = ""
     ) -> List[TickerData]:

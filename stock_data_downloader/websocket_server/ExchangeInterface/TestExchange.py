@@ -2,7 +2,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import uuid
-from typing import Callable, Dict, Any, List
+from typing import Awaitable, Callable, Dict, Any, List
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
     ExchangeInterface,
@@ -171,7 +171,7 @@ class TestExchange(ExchangeInterface):
             return {"status": "NOT_FOUND", "order_id": order_id}
 
     async def subscribe_to_orders(
-        self, order_ids: List[str], callback: Callable[[str, Any], None]
+        self, order_ids: List[str], callback: Callable[[str, Any], Awaitable[None]]
     ):
         """
         Subscribe to order updates
@@ -190,7 +190,7 @@ class TestExchange(ExchangeInterface):
             "order_ids": order_ids,
             "callback": callback,
         }
-
+        
         logger.info(f"Subscribed to order updates with ID: {subscription_id}")
 
     async def unsubscribe_to_orders(self, order_ids: List[str]):

@@ -67,7 +67,7 @@ class HestonSimulator(ISimulator):
                 invalid_henson_stats.append(ticker)
             else:
                 strict_stats[ticker] = StrictHestonTickerConfig(heston=cfg.heston)
-        if not invalid_henson_stats:
+        if invalid_henson_stats:
             logger.warning(f"{len(invalid_henson_stats)} tickers dont have henson stats")
         self.start_prices = start_prices
         self.stats = strict_stats  # now .heston is never None

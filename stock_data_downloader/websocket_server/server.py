@@ -262,8 +262,8 @@ async def start_server(app_config: AppConfig, websocket_uri: str | None = None):
         server.websocket_server,
         host,
         int(port),
-        ping_interval=20,
-        ping_timeout=20,
+        ping_interval=None,
+        ping_timeout=None,
     ):
         logger.info(f"WebSocket server ready on {uri}")
         await asyncio.Future()

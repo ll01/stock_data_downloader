@@ -99,15 +99,12 @@ class WebSocketServer:
                                 await self.reset()
 
                             # Convert payload to TickerData objects if it's a list of dicts
-                            if isinstance(message_for_client.payload, list) and all(isinstance(item, dict) for item in message_for_client.payload):
-                                payload = [TickerData(**item) for item in message_for_client.payload]
-                            else:
-                                payload = message_for_client.payload
+                           
                                 
                             await self.connection_manager.send(
                                 websocket,
                                 message_for_client.result_type,
-                                payload,
+                                message_for_client.payload ,
                             )
                 except (json.JSONDecodeError, ValueError) as e:
                     # Increment error count using ConnectionManager

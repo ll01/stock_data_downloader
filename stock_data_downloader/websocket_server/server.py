@@ -105,6 +105,7 @@ class WebSocketServer:
                                 websocket,
                                 message_for_client.result_type,
                                 message_for_client.payload ,
+                                priority=True
                             )
                 except (json.JSONDecodeError, ValueError) as e:
                     # Increment error count using ConnectionManager

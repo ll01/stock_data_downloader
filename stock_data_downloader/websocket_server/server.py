@@ -27,10 +27,6 @@ from stock_data_downloader.websocket_server.portfolio import Portfolio
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
-)
 
 
 def find_free_port():
@@ -100,7 +96,7 @@ class WebSocketServer:
 
                             # Convert payload to TickerData objects if it's a list of dicts
                            
-                                
+                            logger.debug(f"message for client {message_for_client}")    
                             await self.connection_manager.send(
                                 websocket,
                                 message_for_client.result_type,
@@ -268,3 +264,18 @@ async def start_server(app_config: AppConfig, websocket_uri: str | None = None):
     ):
         logger.info(f"WebSocket server ready on {uri}")
         await asyncio.Future()
+    
+    if __name__ == "__main__":
+        import argparse
+        import json
+        from stock_data_downloader.models import AppConfig
+    
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--config", type=str, required=True)
+        args = parser.parse_args()
+        
+        with open(args.config) as f:
+            config_data = json.load(f)
+        
+        app_config = AppConfig(**config_data)
+        asyncio.run(start_server(app_config))

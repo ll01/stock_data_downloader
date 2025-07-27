@@ -10,8 +10,8 @@ from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
-RESET_REQUESTED = "reset_requested"
-FINAL_REPORT_REQUESTED = "final_report_requested"
+RESET_REQUESTED = "reset"
+FINAL_REPORT_REQUESTED = "final_report"
 TRADE_REJECTION = "trade_rejection"  # Use a constant for rejection type
 ORDER_CONFIRMATION = "order_confirmation"
 ORDER_STATUS_REPORT = "order_status"
@@ -33,6 +33,7 @@ class MessageHandler:
     ) -> HandleResult:
         handle_result = self._send_rejection(data, reason="invalid action")
         action = data.get("action")
+        logging.debug(action)
         if action == "reset":
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
 
@@ -119,6 +120,8 @@ class MessageHandler:
                         "message": f"Error canceling order: {e}",
                     },
                 )
+            else:
+                logging.warning(f"unrecognized action {action} full message {data}" )
         return handle_result
 
     async def handle_order(

@@ -67,6 +67,7 @@ async def main():
     # Set up logging
     setup_logging(args.log_level)
     logging.info(f"Loading configuration from {args.config}")
+    logging.debug(f"Log Level {args.log_level}")
     
     # Load configuration
     try:

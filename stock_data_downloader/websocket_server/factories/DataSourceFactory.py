@@ -35,6 +35,7 @@ class DataSourceFactory:
             backtest_config = backtest_config
             
             logger.info(f"Creating BacktestDataSource with {backtest_config.backtest_model_type} model")
+            logger.info(f"Ticker configs keys: {list(backtest_config.ticker_configs.keys())}")
             
             return BacktestDataSource(
                 ticker_configs=backtest_config.ticker_configs,

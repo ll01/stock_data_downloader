@@ -29,6 +29,9 @@ class BacktestDataSource(DataSourceInterface):
         self._callback = None
         self._running = False
         self._generator_task = None
+        
+        # Log ticker count for debugging
+        logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
 
     async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
         """
@@ -71,7 +74,7 @@ class BacktestDataSource(DataSourceInterface):
             # Set up the appropriate generator based on model type
             if self.backtest_config.backtest_model_type == "heston":
                 self.simulator = HestonSimulator(
-                    stats=self.backtest_config.ticker_configs,
+                    stats=self.ticker_configs,
                     start_prices=self.current_prices,
                     dt=self.backtest_config.interval,
                     seed=self.backtest_config.seed,
@@ -80,7 +83,7 @@ class BacktestDataSource(DataSourceInterface):
                 # Convert TickerConfig to TickerStats
 
                 self.simulator = GBMSimulator(
-                    stats=self.backtest_config.ticker_configs,  # Dict[str, TickerConfig]
+                    stats=self.ticker_configs,  # Dict[str, TickerConfig]
                     start_prices=self.backtest_config.start_prices,
                     dt=self.backtest_config.interval,
                     seed=self.backtest_config.seed,

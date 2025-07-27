@@ -257,7 +257,7 @@ class TestExchange(ExchangeInterface):
             
             try:
                 # Execute callback in the event loop
-                callback(update_type, update_data)
+                await callback(update_type, update_data)
             except Exception as e:
                 logger.error(
                     f"Error in order update callback (sub_id {sub_id}): {e}"

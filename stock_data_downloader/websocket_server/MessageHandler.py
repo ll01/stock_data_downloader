@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Union
 
+from stock_data_downloader.models import TickerData
+
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.trading_system import TradingSystem
@@ -19,7 +21,7 @@ ACCOUNT_BALANCE_REPORT = "account_balance"
 @dataclass
 class HandleResult:
     result_type: str
-    payload: Union[Dict, List[Dict]]
+    payload: Union[Dict, List[Dict], List[TickerData]]
 
 
 class MessageHandler:
@@ -39,7 +41,7 @@ class MessageHandler:
             if next_bar:
                 return HandleResult(
                     result_type="price_update",
-                    payload=[vars(bar) for bar in next_bar],
+                    payload=next_bar,
                 )
             else:
                 return HandleResult(result_type="simulation_end", payload={})

@@ -6,14 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 import websockets
 from websockets import ServerConnection
 
-# Assuming TickerData is defined elsewhere and has .model_dump()
-class TickerData:
-    def __init__(self, symbol: str, price: float):
-        self.symbol = symbol
-        self.price = price
-
-    def model_dump(self, mode: str = "json"):
-        return {"symbol": self.symbol, "price": self.price}
+from stock_data_downloader.models import TickerData
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +104,14 @@ class ConnectionManager:
         if payload is not None:
             # Convert any TickerData objects to dictionaries
             if isinstance(payload, list) and type == "price_update":
-                msg["data"] = [p.__dict__ for p in payload]
+                # Check if the items are TickerData objects (Pydantic BaseModel)
+                if payload and isinstance(payload[0], TickerData):
+                    msg["data"] = [p.model_dump() for p in payload]
+                else:
+                    # Handle case where items might already be dictionaries
+                    msg["data"] = payload
             elif isinstance(payload, TickerData):
-                msg["data"] = [ payload.__dict__]
+                msg["data"] = [payload.model_dump()]
             else:
                 msg["data"] = payload
         try:

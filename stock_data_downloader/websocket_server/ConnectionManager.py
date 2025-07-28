@@ -101,6 +101,7 @@ class ConnectionManager:
         Messages can be sent with priority.
         """
         if websocket not in self.connection_queues:
+            logging.warning("attempted to send to socket server has lost connection to")
             return  # already gone
 
         queues = self.connection_queues[websocket]

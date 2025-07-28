@@ -65,9 +65,19 @@ class DataSourceInterface(ABC):
     async def reset(self):
         """
         Reset the data source state.
-        
+
         For backtest sources, this should restart the simulation.
         For live sources, this might reconnect to the data feed.
+        """
+        pass
+
+    @abstractmethod
+    async def get_next_bar(self) -> Optional[List[TickerData]]:
+        """
+        Fetch the next single bar of data for all tickers.
+
+        Returns:
+            Optional[List[TickerData]]: The next bar of data, or None if no more data is available.
         """
         pass
     

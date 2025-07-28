@@ -3,9 +3,6 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Union
 
-from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
-    ExchangeInterface,
-)
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.trading_system import TradingSystem
@@ -36,6 +33,16 @@ class MessageHandler:
         logging.debug(action)
         if action == "reset":
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
+
+        elif action == "next_tick":
+            next_bar = await trading_system.data_source.get_next_bar()
+            if next_bar:
+                return HandleResult(
+                    result_type="price_update",
+                    payload=[vars(bar) for bar in next_bar],
+                )
+            else:
+                return HandleResult(result_type="simulation_end", payload={})
 
         elif action in ["final_report", "report"]:
             balance_info = await trading_system.exchange.get_balance()

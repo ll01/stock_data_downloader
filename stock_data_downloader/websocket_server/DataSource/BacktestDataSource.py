@@ -55,6 +55,8 @@ class BacktestDataSource(DataSourceInterface):
             callback: Async function to call when new data is available.
                      The callback will receive data in a standardized format.
         """
+        if self.backtest_config.backtest_mode ==  "synchronous":
+            return
         self._callback = callback
         asyncio.create_task(self.stream_price_updates())
 
@@ -138,3 +140,36 @@ class BacktestDataSource(DataSourceInterface):
         await self.unsubscribe_realtime_data()
         if old_callback:
             await self.subscribe_realtime_data(old_callback)
+
+    async def get_next_bar(self) -> Optional[List[TickerData]]:
+        # Initialize simulator if not already done
+        if not hasattr(self, 'simulator') or self.simulator is None:
+            # Set up current_prices from start_prices
+            for ticker, price in self.backtest_config.start_prices.items():
+                self.current_prices[ticker] = price
+            # Initialize the simulator based on model type
+            if self.backtest_config.backtest_model_type == "heston":
+                self.simulator = HestonSimulator(
+                    stats=self.ticker_configs,
+                    start_prices=self.current_prices,
+                    dt=self.backtest_config.interval,
+                    seed=self.backtest_config.seed,
+                )
+            elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
+                self.simulator = GBMSimulator(
+                    stats=self.ticker_configs,
+                    start_prices=self.backtest_config.start_prices,
+                    dt=self.backtest_config.interval,
+                    seed=self.backtest_config.seed,
+                )
+            else:
+                raise ValueError(f"Unsupported backtest model type: {self.backtest_config.backtest_model_type}")
+            self.current_step = 0
+
+        # Check if we've reached the end of the simulation
+        if self.current_step >= self.backtest_config.timesteps:
+            return None
+
+        # Get the next bar and increment the step counter
+        self.current_step += 1
+        return self.simulator.next_bars()

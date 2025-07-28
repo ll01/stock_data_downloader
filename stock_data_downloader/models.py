@@ -42,14 +42,14 @@ class CCXTDataSourceConfig(BaseModel):
     api_config: Dict[str, Any] = {}
     
 class BacktestDataSourceConfig(BaseModel):
-    """Configuration for backtest data sources"""
-    source_type: Literal["backtest"]
-    backtest_model_type: str  # "heston", "gbm", etc.
+    source_type: str = "backtest"
+    backtest_model_type: str = "gbm"
     start_prices: Dict[str, float]
     timesteps: int
     interval: float
     seed: Optional[int] = None
     ticker_configs: Dict[str, TickerConfig]
+    backtest_mode: Optional[str] = None
 
 class HyperliquidDataSourceConfig(BaseModel):
     """Configuration for Hyperliquid data source"""

@@ -25,10 +25,11 @@ class BacktestDataSource(DataSourceInterface):
         super().__init__(tickers=list(ticker_configs.keys()))
         self.backtest_config = backtest_config
         self.ticker_configs = ticker_configs
-        self.simulator: ISimulator
+        self.simulator: Optional[ISimulator] = None
         self._callback = None
         self._running = False
         self._generator_task = None
+        self.current_step = 0
         
         # Log ticker count for debugging
         logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
@@ -136,6 +137,7 @@ class BacktestDataSource(DataSourceInterface):
 
     async def reset(self):
         """Reset the backtest data source to start a new simulation"""
+        self.current_step = 0
         old_callback = self._callback
         await self.unsubscribe_realtime_data()
         if old_callback:
@@ -143,7 +145,7 @@ class BacktestDataSource(DataSourceInterface):
 
     async def get_next_bar(self) -> Optional[List[TickerData]]:
         # Initialize simulator if not already done
-        if not hasattr(self, 'simulator') or self.simulator is None:
+        if self.simulator is None:
             # Set up current_prices from start_prices
             for ticker, price in self.backtest_config.start_prices.items():
                 self.current_prices[ticker] = price

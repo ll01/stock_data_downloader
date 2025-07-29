@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
@@ -166,12 +167,16 @@ class MessageHandler:
             order_placement_result = await trading_system.exchange.place_order(
                 orders_to_place
             )
+            payload = []
             for result in order_placement_result:
                 if result.success:
                     trading_system.portfolio.apply_order_result(result)
+                    result_dict = vars(result)
+                    result_dict["portfolio"] = vars(trading_system.portfolio)
+                    payload.append(result_dict)
             return HandleResult(
                 result_type="order_confirmation",
-                payload=[vars(result) for result in order_placement_result],
+                payload=payload
             )
 
         except Exception as e:

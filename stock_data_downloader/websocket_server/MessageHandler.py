@@ -36,16 +36,10 @@ class MessageHandler:
         if action == "reset":
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
 
-        elif action == "next_tick":
-            next_bar = await trading_system.data_source.get_next_bar()
-            if next_bar:
-                return HandleResult(
-                    result_type="price_update",
-                    payload=next_bar,
-                )
-            else:
-                return HandleResult(result_type="simulation_end", payload={})
-
+        elif action == "next_bar":
+            logging.debug("Received next_bar_ready signal from client")
+            return HandleResult(
+                    result_type="price_update",  payload=[])
         elif action in ["final_report", "report"]:
             balance_info = await trading_system.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)

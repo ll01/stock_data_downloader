@@ -88,8 +88,6 @@ class TestExchange(ExchangeInterface):
 
                 if status == "FILLED":
                     self.closed_orders[order_id] = order_info
-                    # Notify any subscribers
-                    await self._notify_order_update("order_filled", order_info)
                 else:
                     self.active_orders[order_id] = order_info
 
@@ -228,11 +226,6 @@ class TestExchange(ExchangeInterface):
             # Move to closed orders
             self.closed_orders[order_id] = self.active_orders[order_id]
             del self.active_orders[order_id]
-
-            # Notify subscribers
-            await self._notify_order_update(
-                "order_canceled", self.closed_orders[order_id]
-            )
 
             logger.info(f"Order {order_id} canceled")
             return True

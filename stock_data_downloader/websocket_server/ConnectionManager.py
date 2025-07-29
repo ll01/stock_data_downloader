@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 class SocketQueues:
     # These queues should be asyncio.Queue instances
     main: asyncio.Queue
-    prio: asyncio.Queue
 
 class ConnectionManager:
     def __init__(self, max_in_flight_messages: int = 10, max_prio_messages: int = 5):
@@ -31,7 +30,6 @@ class ConnectionManager:
         # Initialize both main and priority queues for each connection
         socket_queues = SocketQueues()
         socket_queues.main = asyncio.Queue(maxsize=self.max_in_flight_messages)
-        socket_queues.prio = asyncio.Queue(maxsize=self.max_prio_messages) # Priority queue
         
         self.connection_queues[websocket] = socket_queues
         self.error_counts[websocket] = 0
@@ -50,28 +48,17 @@ class ConnectionManager:
 
     async def _sender_task(self, websocket: ServerConnection) -> None:
         # Get both queues for this connection
-        queues = self.connection_queues.get(websocket)
-        if not queues:
-            return # Connection already removed
+        queue = self.connection_queues[websocket].main
 
         while True:
             try:
-                message: Dict[str, Any]
-                # Prioritize: Check priority queue first
-                if not queues.prio.empty():
-                    message = await queues.prio.get()
-                    queues.prio.task_done()
-                    logger.debug(f"Sending PRIORITY message to {websocket.remote_address}")
-                else:
-                    message = await queues.main.get()
-                    queues.main.task_done()
-                    logger.debug(f"Sending REGULAR message to {websocket.remote_address}")
-
+                message = await queue.get()
+                queue.task_done()
+                logger.debug(f"Sending message to {websocket.remote_address}")
+                
                 json_message = json.dumps(message, default=str)
                 await websocket.send(json_message)
-                
             except websockets.ConnectionClosed:
-                logger.info(f"ConnectionClosed for {websocket.remote_address} in sender task.")
                 await self.remove_connection(websocket)
                 break
             except Exception:
@@ -98,7 +85,7 @@ class ConnectionManager:
             return  # already gone
 
         queues = self.connection_queues[websocket]
-        target_queue = queues.prio if priority else queues.main
+        target_queue = queues.main
 
         msg: Dict[str, Any] = {"type": type}
         if payload is not None:
@@ -121,6 +108,8 @@ class ConnectionManager:
                 f"Client {'priority' if priority else 'main'} queue full for {websocket.remote_address}; closing connection"
             )
             await self.remove_connection(websocket)
+        except Exception as e:
+            logging.warning(f"failing to send message to queue {e}", exc_info=True)
 
     def increment_error_count(self, websocket: ServerConnection) -> int:
         self.error_counts[websocket] = self.error_counts.get(websocket, 0) + 1

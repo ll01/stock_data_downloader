@@ -20,17 +20,19 @@ logger = logging.getLogger(__name__)
 
 class BacktestDataSource(DataSourceInterface):
     def __init__(
-        self, ticker_configs: Dict[str, TickerConfig], backtest_config: BacktestDataSourceConfig
+        self, ticker_configs: Dict[str, TickerConfig], backtest_config: BacktestDataSourceConfig,
+        ready_for_next_bar: Optional[asyncio.Event] = None
     ):
         super().__init__(tickers=list(ticker_configs.keys()))
         self.backtest_config = backtest_config
         self.ticker_configs = ticker_configs
+        self.ready_for_next_bar = ready_for_next_bar
         self.simulator: Optional[ISimulator] = None
         self._callback = None
         self._running = False
         self._generator_task = None
         self.current_step = 0
-        
+
         # Log ticker count for debugging
         logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
 
@@ -56,81 +58,130 @@ class BacktestDataSource(DataSourceInterface):
             callback: Async function to call when new data is available.
                      The callback will receive data in a standardized format.
         """
-        if self.backtest_config.backtest_mode ==  "synchronous":
-            return
+    
         self._callback = callback
+        self._running = True
         asyncio.create_task(self.stream_price_updates())
 
     
 
         
     async def stream_price_updates(self):
-        
-        for ticker, price in self.backtest_config.start_prices.items():
-            self.current_prices[ticker] = price
-            
-        logger.info(
-            f"Starting backtest simulation with model type: {self.backtest_config.backtest_model_type}"
-        )
-
+        """Generate and send price updates, pausing between bars in backtest mode"""
         try:
-            # Set up the appropriate generator based on model type
-            if self.backtest_config.backtest_model_type == "heston":
-                self.simulator = HestonSimulator(
-                    stats=self.ticker_configs,
-                    start_prices=self.current_prices,
-                    dt=self.backtest_config.interval,
-                    seed=self.backtest_config.seed,
-                )
-            elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
-                # Convert TickerConfig to TickerStats
-
-                self.simulator = GBMSimulator(
-                    stats=self.ticker_configs,  # Dict[str, TickerConfig]
-                    start_prices=self.backtest_config.start_prices,
-                    dt=self.backtest_config.interval,
-                    seed=self.backtest_config.seed,
-                )
-            else:
-                available_types = ["heston", "gbm"]
-                logger.error(
-                    "Unsupported backtest model type: "
-                    f"{self.backtest_config.backtest_model_type}. ",
-                    f"Available types: {', '.join(available_types)}"
-                )
-                raise ValueError(
-                    "Unsupported backtest model type: ",
-                    f"{self.backtest_config.backtest_model_type}"
-                )
-
-            # Process data from the generator
+            # Initialize simulator if needed
+            if self.simulator is None:
+                self._initialize_simulator()
+            assert self.simulator is not None, "Simulator must be initialized before streaming"
+            
             max_time_steps = self.backtest_config.timesteps
-            try:
-                logger.info(f"Starting data generation for {len(self.tickers)} tickers")
-                for _ in range(max_time_steps):
-                    tick_batch =  self.simulator.next_bars()
+            logger.info(f"Starting backtest simulation for {max_time_steps} timesteps")
+            
+            for step in range(max_time_steps):
+                if not self._running:
+                    break
+                
+                # Get the next bar and increment the step counter
+                self.current_step = step + 1
+                tick_batch = self.simulator.next_bars()
+                
+                # Push data to callback
+                if self._callback:
                     await self._notify_callback("price_update", tick_batch)
-                    await asyncio.sleep(0)
+                
+                # CRITICAL: Wait for TradingLoop to signal it's ready for next bar
+                # Only do this if we're in backtest mode (have the event)
+                if self.ready_for_next_bar:
+                    logger.debug(f"BacktestDataSource pausing at step {self.current_step} - waiting for ready signal")
+                    self.ready_for_next_bar.clear()
+                    await self.ready_for_next_bar.wait()
+                    logger.debug(f"BacktestDataSource resuming at step {self.current_step}")
+            
+            # Signal the end of the simulation
+            if self._callback:
+                logger.info("Backtest simulation completed successfully")
+                await self._notify_callback("simulation_end", None)
+        except asyncio.CancelledError:
+            logger.info("Backtest data generation task cancelled")
+        except Exception as e:
+            logger.error(f"Error in backtest data generation: {e}", exc_info=True)
+            if self._callback:
+                await self._notify_callback("simulation_end", {"error": str(e)})
+        finally:
+            self._running = False
+        # for ticker, price in self.backtest_config.start_prices.items():
+        #     self.current_prices[ticker] = price
+            
+        # logger.info(
+        #     f"Starting backtest simulation with model type: {self.backtest_config.backtest_model_type}"
+        # )
+
+        # try:
+        #     # Set up the appropriate generator based on model type
+        #     if self.backtest_config.backtest_model_type == "heston":
+        #         self.simulator = HestonSimulator(
+        #             stats=self.ticker_configs,
+        #             start_prices=self.current_prices,
+        #             dt=self.backtest_config.interval,
+        #             seed=self.backtest_config.seed,
+        #         )
+        #     elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
+        #         # Convert TickerConfig to TickerStats
+
+        #         self.simulator = GBMSimulator(
+        #             stats=self.ticker_configs,  # Dict[str, TickerConfig]
+        #             start_prices=self.backtest_config.start_prices,
+        #             dt=self.backtest_config.interval,
+        #             seed=self.backtest_config.seed,
+        #         )
+        #     else:
+        #         available_types = ["heston", "gbm"]
+        #         logger.error(
+        #             "Unsupported backtest model type: "
+        #             f"{self.backtest_config.backtest_model_type}. ",
+        #             f"Available types: {', '.join(available_types)}"
+        #         )
+        #         raise ValueError(
+        #             "Unsupported backtest model type: ",
+        #             f"{self.backtest_config.backtest_model_type}"
+        #         )
+
+        #     # Process data from the generator
+        #     max_time_steps = self.backtest_config.timesteps
+        #     try:
+        #         logger.info(f"Starting data generation for {len(self.tickers)} tickers")
+        #         for _ in range(max_time_steps):
+        #             tick_batch =  self.simulator.next_bars()
+        #             await self._notify_callback("price_update", tick_batch)
+        #             await asyncio.sleep(0)
                     
 
-                # Signal the end of the simulation with a standardized message
-                logger.info("Backtest simulation completed successfully")
-                self.simulator.reset()
-                await self._notify_callback("simulation_end", None)
+        #         # Signal the end of the simulation with a standardized message
+        #         logger.info("Backtest simulation completed successfully")
+        #         self.simulator.reset()
+        #         await self._notify_callback("simulation_end", None)
 
-            except Exception as e:
-                logger.error(f"Error in backtest data generation: {e}", exc_info=True)
-                # Ensure we still signal simulation end even on error
-                await self._notify_callback("simulation_end", { "error": str(e)})
-        except Exception as e:
-            logger.error(f"Failed to initialize backtest generator: {e}", exc_info=True)
-            raise
+        #     except Exception as e:
+        #         logger.error(f"Error in backtest data generation: {e}", exc_info=True)
+        #         # Ensure we still signal simulation end even on error
+        #         await self._notify_callback("simulation_end", { "error": str(e)})
+        # except Exception as e:
+        #     logger.error(f"Failed to initialize backtest generator: {e}", exc_info=True)
+        #     raise
         
     async def get_historical_data(
         self, tickers: List[str] = [], interval: str = ""
     ) -> List[TickerData]:
         # BacktestDataSource does not provide historical data directly
-        return []
+        # Generate realistic historical data (10 bars)
+        historical_data = []
+        # # Ensure simulator is initialized
+        # if self.simulator is None:
+        #     self._initialize_simulator()
+        # assert self.simulator is not None, "Simulator must be initialized for historical data"
+        # for _ in range(10):
+        #     historical_data.extend(self.simulator.next_bars())
+        return historical_data
 
     async def unsubscribe_realtime_data(self):
         self._callback = None
@@ -146,27 +197,8 @@ class BacktestDataSource(DataSourceInterface):
     async def get_next_bar(self) -> Optional[List[TickerData]]:
         # Initialize simulator if not already done
         if self.simulator is None:
-            # Set up current_prices from start_prices
-            for ticker, price in self.backtest_config.start_prices.items():
-                self.current_prices[ticker] = price
-            # Initialize the simulator based on model type
-            if self.backtest_config.backtest_model_type == "heston":
-                self.simulator = HestonSimulator(
-                    stats=self.ticker_configs,
-                    start_prices=self.current_prices,
-                    dt=self.backtest_config.interval,
-                    seed=self.backtest_config.seed,
-                )
-            elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
-                self.simulator = GBMSimulator(
-                    stats=self.ticker_configs,
-                    start_prices=self.backtest_config.start_prices,
-                    dt=self.backtest_config.interval,
-                    seed=self.backtest_config.seed,
-                )
-            else:
-                raise ValueError(f"Unsupported backtest model type: {self.backtest_config.backtest_model_type}")
-            self.current_step = 0
+            self._initialize_simulator()
+        assert self.simulator is not None, "Simulator must be initialized for next bar"
 
         # Check if we've reached the end of the simulation
         if self.current_step >= self.backtest_config.timesteps:
@@ -175,3 +207,26 @@ class BacktestDataSource(DataSourceInterface):
         # Get the next bar and increment the step counter
         self.current_step += 1
         return self.simulator.next_bars()
+    
+    def _initialize_simulator(self):
+        """Initialize the simulator based on model type"""
+        # Set up current_prices from start_prices
+        for ticker, price in self.backtest_config.start_prices.items():
+            self.current_prices[ticker] = price
+        
+        if self.backtest_config.backtest_model_type == "heston":
+            self.simulator = HestonSimulator(
+                stats=self.ticker_configs,
+                start_prices=self.current_prices,
+                dt=self.backtest_config.interval,
+                seed=self.backtest_config.seed,
+            )
+        elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
+            self.simulator = GBMSimulator(
+                stats=self.ticker_configs,
+                start_prices=self.backtest_config.start_prices,
+                dt=self.backtest_config.interval,
+                seed=self.backtest_config.seed,
+            )
+        else:
+            raise ValueError(f"Unsupported backtest model type: {self.backtest_config.backtest_model_type}")

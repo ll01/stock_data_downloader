@@ -50,6 +50,9 @@ class WebSocketServer:
         self.connection_manager = connection_manager
         self.message_handler = message_handler
         self.uri = uri
+        # Add event management for backtest coordination
+        self.ready_for_next_bar = asyncio.Event()
+        self.ready_for_next_bar.set()  # Ready for first bar immediately
         self.simulation_running = False
         self._order_subscription_id: Optional[int] = None
         self.loop = None
@@ -93,10 +96,13 @@ class WebSocketServer:
                             )
                             if message_for_client.result_type == RESET_REQUESTED:
                                 await self.reset()
+                            if  message_for_client.result_type == "price_update":
+                                self.ready_for_next_bar.set()
+                                continue
 
                             # Convert payload to TickerData objects if it's a list of dicts
                            
-                            logger.debug(f"message for client {message_for_client}")    
+                            logger.debug(f"message for client {message_for_client}")
                             await self.connection_manager.send(
                                 websocket,
                                 message_for_client.result_type,
@@ -190,7 +196,18 @@ class WebSocketServer:
                 return
             await self.connection_manager.send(websocket, kind, payload)
 
-        await self.trading_system.data_source.subscribe_realtime_data(forward)
+        # Check if we're using a backtest data source
+        from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
+        
+        if isinstance(self.trading_system.data_source, BacktestDataSource):
+            logger.info("Detected BacktestDataSource - enabling turn-based simulation")
+            # Pass the ready_for_next_bar event to BacktestDataSource
+            self.trading_system.data_source.ready_for_next_bar = self.ready_for_next_bar
+            await self.trading_system.data_source.subscribe_realtime_data(forward)
+        else:
+            # For live data sources, use standard subscription
+            await self.trading_system.data_source.subscribe_realtime_data(forward)
+        
         await self.trading_system.exchange.subscribe_to_orders([], forward)
 
     async def shutdown(self):

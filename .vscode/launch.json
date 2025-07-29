@@ -47,7 +47,7 @@
             "request": "launch",
             "module": "stock_data_downloader.run_server",
             "console": "integratedTerminal",
-            "args": ["--config", "C:/Users/enti2/programming/trading_bot/backtest_config.yml"]
+            "args": ["--config", "config_examples/test_config.yml", "--log-level", "DEBUG"]
         }
 
     ]

@@ -53,10 +53,9 @@ class HestonSimulator(ISimulator):
         dt: float,
         seed: Optional[int] = None,
     ):
-        if seed is not None:
-            np.random.seed(seed)
+        # per-instance RNG for determinism
+        self._rng = np.random.default_rng(seed)
 
-       
         self.dt = dt
         self.start_time = datetime.now(timezone.utc)
         
@@ -97,7 +96,7 @@ class HestonSimulator(ISimulator):
             )
 
             corr = np.array([[1, rho], [rho, 1]])
-            z = np.random.normal(size=2) @ np.linalg.cholesky(corr).T
+            z = self._rng.normal(size=2) @ np.linalg.cholesky(corr).T
             price_shock, var_shock = z[0], z[1]
 
             last_v = max(self.current_variances[ticker], 0)
@@ -111,8 +110,8 @@ class HestonSimulator(ISimulator):
             self.current_prices[ticker] = new_p
 
             open_p = last_p
-            high_p = max(open_p, new_p) + np.random.uniform(0, 0.01) * new_p
-            low_p = min(open_p, new_p) - np.random.uniform(0, 0.01) * new_p
+            high_p = max(open_p, new_p) + self._rng.uniform(0, 0.01) * new_p
+            low_p = min(open_p, new_p) - self._rng.uniform(0, 0.01) * new_p
             
             bars.append(
                 TickerData(
@@ -152,8 +151,8 @@ class GBMSimulator(ISimulator):
         dt: float,
         seed: int | None = None,
     ):
-        if seed is not None:
-            np.random.seed(seed)
+        # per-instance RNG for determinism
+        self._rng = np.random.default_rng(seed)
 
         self.dt = dt
         self.start_time = datetime.now(timezone.utc)
@@ -189,15 +188,15 @@ class GBMSimulator(ISimulator):
             last_price = self.current_prices[ticker]
 
             # GBM closed-form update
-            z = np.random.normal()
+            z = self._rng.normal()
             growth = (mu - 0.5 * sigma ** 2) * self.dt + sigma * np.sqrt(self.dt) * z
             new_price = last_price * np.exp(growth)
             self.current_prices[ticker] = new_price
 
             # Simple OHLC
             open_p = last_price
-            high_p = max(open_p, new_price) + np.random.uniform(0, 0.01) * new_price
-            low_p = min(open_p, new_price) - np.random.uniform(0, 0.01) * new_price
+            high_p = max(open_p, new_price) + self._rng.uniform(0, 0.01) * new_price
+            low_p = min(open_p, new_price) - self._rng.uniform(0, 0.01) * new_price
 
             bars.append(
                 TickerData(

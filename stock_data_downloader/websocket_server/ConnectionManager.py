@@ -21,16 +21,19 @@ class ConnectionManager:
         self.connection_queues: Dict[ServerConnection, SocketQueues] = {}
         self.error_counts: Dict[ServerConnection, int] = {}
         self.max_in_flight_messages = max_in_flight_messages
-        self.max_prio_messages = max_prio_messages # New: Max size for priority queue
+        self.max_prio_messages = max_prio_messages  # New: Max size for priority queue
         self.MAX_RETRIES = 10
+        # client id mappings
+        self._client_ids: Dict[ServerConnection, str] = {}
+        self._sockets_by_client: Dict[str, ServerConnection] = {}
 
     async def add_connection(self, websocket: ServerConnection) -> None:
         self.connections.add(websocket)
-        
+
         # Initialize both main and priority queues for each connection
         socket_queues = SocketQueues()
         socket_queues.main = asyncio.Queue(maxsize=self.max_in_flight_messages)
-        
+
         self.connection_queues[websocket] = socket_queues
         self.error_counts[websocket] = 0
         asyncio.create_task(self._sender_task(websocket))
@@ -40,11 +43,26 @@ class ConnectionManager:
         self.connections.discard(websocket)
         # Pop the SocketQueues object
         if websocket in self.connection_queues:
-            # Ensure queues are empty or tasks are done if necessary,
-            # though removing the reference should allow garbage collection.
-            del self.connection_queues[websocket] 
+            del self.connection_queues[websocket]
         self.error_counts.pop(websocket, None)
+        # remove client id mapping
+        client_id = self._client_ids.pop(websocket, None)
+        if client_id:
+            self._sockets_by_client.pop(client_id, None)
         logger.info(f"Connection from {websocket.remote_address} closed")
+
+    def assign_client_id(self, websocket: ServerConnection) -> str:
+        import uuid
+        client_id = str(uuid.uuid4())
+        self._client_ids[websocket] = client_id
+        self._sockets_by_client[client_id] = websocket
+        return client_id
+
+    def get_client_id(self, websocket: ServerConnection) -> Optional[str]:
+        return self._client_ids.get(websocket)
+
+    def get_socket(self, client_id: str) -> Optional[ServerConnection]:
+        return self._sockets_by_client.get(client_id)
 
     async def _sender_task(self, websocket: ServerConnection) -> None:
         # Get both queues for this connection
@@ -58,15 +76,23 @@ class ConnectionManager:
                 
                 json_message = json.dumps(message, default=str)
                 await websocket.send(json_message)
+            except asyncio.CancelledError:
+                # graceful shutdown
+                break
             except websockets.ConnectionClosed:
+                await self.remove_connection(websocket)
+                break
+            except RuntimeError as e:
+                # Event loop closed during teardown on Windows
+                if "Event loop is closed" in str(e):
+                    break
+                logger.exception(f"RuntimeError in sender task for {websocket.remote_address}")
                 await self.remove_connection(websocket)
                 break
             except Exception:
                 logger.exception(f"Unexpected error in sender task for {websocket.remote_address}")
                 await self.remove_connection(websocket)
                 break
-            # Small sleep to prevent busy-waiting if queues are empty, though `await get()` handles this.
-            # It's good practice if there are other operations in the loop.
             await asyncio.sleep(0.0001) 
 
     async def send(

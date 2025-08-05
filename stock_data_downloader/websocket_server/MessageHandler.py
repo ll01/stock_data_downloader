@@ -38,9 +38,26 @@ class MessageHandler:
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
 
         elif action == "next_bar":
-            logging.debug("Received next_bar_ready signal from client")
-            return HandleResult(
-                    result_type="price_update",  payload=[])
+            # Per-client stepping: determine client_id from trading_system connection manager
+            websocket = data.get("_ws")
+            if websocket is None:
+                return self._send_rejection(data, reason="Missing websocket context for next_bar")
+            client_id = trading_system.connection_manager.get_client_id(websocket) if hasattr(trading_system, "connection_manager") else None
+            if not client_id:
+                return self._send_rejection(data, reason="Unknown client for next_bar")
+            # If push mode, next_bar is not supported
+            pull_mode = getattr(trading_system.data_source, "pull_mode", False)
+            if not pull_mode:
+                return self._send_rejection(data, reason="next_bar not supported in push mode")
+            try:
+                # BacktestDataSource: fetch next bar for this client
+                next_batch = await trading_system.data_source.get_next_bar(client_id)  # type: ignore[attr-defined]
+            except AttributeError:
+                # Fallback: single cursor
+                next_batch = await trading_system.data_source.get_next_bar()
+            if not next_batch:
+                return HandleResult(result_type="simulation_end", payload={})
+            return HandleResult(result_type="price_update", payload=next_batch)
         elif action in ["final_report", "report"]:
             balance_info = await trading_system.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)

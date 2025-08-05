@@ -50,10 +50,9 @@ class WebSocketServer:
         self.connection_manager = connection_manager
         self.message_handler = message_handler
         self.uri = uri
-        # Add event management for backtest coordination
-        self.ready_for_next_bar = asyncio.Event()
-        self.ready_for_next_bar.set()  # Ready for first bar immediately
-        self.simulation_running = False
+        # Per-client coordination for backtests
+        self._client_ready: dict[str, asyncio.Event] = {}
+        self._client_locks: dict[str, asyncio.Lock] = {}
         self._order_subscription_id: Optional[int] = None
         self.loop = None
         self.processor_task = None
@@ -88,17 +87,21 @@ class WebSocketServer:
                         requests = [requests]
                     for request in requests:
                         if "action" in request:
+                            # attach websocket context for per-client handling
+                            request_with_ws = dict(request)
+                            request_with_ws["_ws"] = websocket
                             message_for_client = (
                                 await self.message_handler.handle_message(
-                                    request,
+                                    request_with_ws,
                                     self.trading_system,
                                 )
                             )
                             if message_for_client.result_type == RESET_REQUESTED:
-                                await self.reset()
-                            if  message_for_client.result_type == "price_update":
-                                self.ready_for_next_bar.set()
+                                await self.reset(websocket)
                                 continue
+                            if message_for_client.result_type == "price_update":
+                                # price updates are now targeted per client; nothing to toggle globally
+                                pass
 
                             # Convert payload to TickerData objects if it's a list of dicts
                            
@@ -153,6 +156,17 @@ class WebSocketServer:
     async def websocket_server(self, websocket: ServerConnection):
         await self.connection_manager.add_connection(websocket)
         try:
+            # assign client id and init per-client state
+            client_id = self.connection_manager.assign_client_id(websocket)
+            self._client_ready[client_id] = asyncio.Event()
+            self._client_ready[client_id].set()  # first bar ready
+            self._client_locks[client_id] = asyncio.Lock()
+            mode = "push"
+            from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
+            if isinstance(self.trading_system.data_source, BacktestDataSource) and self.trading_system.data_source.pull_mode:
+                mode = "pull"
+            await self.connection_manager.send(websocket, "welcome", {"client_id": client_id, "mode": mode})
+
             historical = await self.trading_system.data_source.get_historical_data()
             if historical:
                 await self.connection_manager.send(
@@ -198,11 +212,11 @@ class WebSocketServer:
 
         # Check if we're using a backtest data source
         from stock_data_downloader.websocket_server.DataSource.BacktestDataSource import BacktestDataSource
-        
+
         if isinstance(self.trading_system.data_source, BacktestDataSource):
-            logger.info("Detected BacktestDataSource - enabling turn-based simulation")
-            # Pass the ready_for_next_bar event to BacktestDataSource
-            self.trading_system.data_source.ready_for_next_bar = self.ready_for_next_bar
+            logger.info("Detected BacktestDataSource - using per-client step model (pull mode)")
+            self.trading_system.data_source.enable_pull_mode(True)
+            # Register callback only; do not auto-stream in pull mode
             await self.trading_system.data_source.subscribe_realtime_data(forward)
         else:
             # For live data sources, use standard subscription
@@ -219,30 +233,31 @@ class WebSocketServer:
     
     async def reset(self, initiating_websocket=None):
         """
-        Reset the entire simulation.
-        - Clears positions (always safe).
-        - Calls `reset()` on the data-source if it supports it.
-        - Broadcasts reset confirmation.
+        Reset simulation state. If initiating_websocket is provided, reset only that client's state.
         """
-        logger.info("Resetting ")
+        if initiating_websocket is not None:
+            client_id = self.connection_manager.get_client_id(initiating_websocket)
+            logger.info(f"Resetting client {client_id}")
+            # clear per-client portfolio state if applicable
+            self.trading_system.portfolio.clear_positions()
+            try:
+                await self.trading_system.data_source.reset_client(client_id)  # type: ignore[attr-defined]
+            except AttributeError:
+                await self.trading_system.data_source.reset()
+            await self.connection_manager.send(initiating_websocket, "reset", {"message": "Client simulation has been reset."})
+            return
 
-    
+        logger.info("Resetting all clients")
         self.trading_system.portfolio.clear_positions()
-
-
         await self.trading_system.data_source.reset()
-        
-
-        # 3. Notify all clients
         await self.connection_manager.broadcast_to_all(
             "reset", {"message": "Simulation has been reset."}
         )
-
         logger.info("Reset complete.")
 
 
 
-async def start_server(app_config: AppConfig, websocket_uri: str | None = None):
+async def start_server(app_config: AppConfig, websocket_uri: str | None = None, stop_event: asyncio.Event | None = None):
     """Boot the WebSocket server from a single AppConfig using the existing factories."""
     uri = websocket_uri or f"ws://localhost:{find_free_port()}"
 
@@ -260,6 +275,8 @@ async def start_server(app_config: AppConfig, websocket_uri: str | None = None):
 
     # 3.  WebSocket server
     connection_manager = ConnectionManager()
+    # attach connection manager onto trading_system for handler context
+    setattr(trading_system, "connection_manager", connection_manager)
     message_handler = MessageHandler()
     server = WebSocketServer(
         trading_system=trading_system,
@@ -278,9 +295,21 @@ async def start_server(app_config: AppConfig, websocket_uri: str | None = None):
         int(port),
         ping_interval=None,
         ping_timeout=None,
-    ):
+    ) as ws_server:
         logger.info(f"WebSocket server ready on {uri}")
-        await asyncio.Future()
+        if stop_event is None:
+            await asyncio.Future()
+        else:
+            await stop_event.wait()
+            # proactively close client connections
+            try:
+                for ws in list(connection_manager.connections):
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     
     if __name__ == "__main__":
         import argparse

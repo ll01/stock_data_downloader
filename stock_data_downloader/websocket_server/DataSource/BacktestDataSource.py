@@ -32,9 +32,19 @@ class BacktestDataSource(DataSourceInterface):
         self._running = False
         self._generator_task = None
         self.current_step = 0
+        # precomputed bars for isolation
+        self._precomputed: list[list[TickerData]] = []
+        # per-client step tracking
+        self.client_steps: Dict[str, int] = {}
+        self.step_locks: Dict[str, asyncio.Lock] = {}
+        # default to pull mode for backtests
+        self.pull_mode: bool = True
 
         # Log ticker count for debugging
         logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
+
+    def enable_pull_mode(self, on: bool = True):
+        self.pull_mode = on
 
     async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
         """
@@ -60,8 +70,12 @@ class BacktestDataSource(DataSourceInterface):
         """
     
         self._callback = callback
-        self._running = True
-        asyncio.create_task(self.stream_price_updates())
+        if not self.pull_mode:
+            self._running = True
+            asyncio.create_task(self.stream_price_updates())
+        else:
+            # pull mode: do not auto-stream; server drives via get_next_bar_for_client
+            self._running = False
 
     
 
@@ -189,10 +203,19 @@ class BacktestDataSource(DataSourceInterface):
     async def reset(self):
         """Reset the backtest data source to start a new simulation"""
         self.current_step = 0
+        self.client_steps.clear()
+        self.step_locks.clear()
+        self._precomputed.clear()
+        if self.simulator is not None:
+            self.simulator.reset()
         old_callback = self._callback
         await self.unsubscribe_realtime_data()
         if old_callback:
             await self.subscribe_realtime_data(old_callback)
+
+    async def reset_client(self, client_id: str):
+        self.client_steps.pop(client_id, None)
+        self.step_locks.pop(client_id, None)
 
     async def get_next_bar(self) -> Optional[List[TickerData]]:
         # Initialize simulator if not already done
@@ -207,6 +230,40 @@ class BacktestDataSource(DataSourceInterface):
         # Get the next bar and increment the step counter
         self.current_step += 1
         return self.simulator.next_bars()
+
+    def _ensure_precomputed(self):
+        if self._precomputed:
+            return
+        # build once from simulator for isolation across clients
+        if self.simulator is None:
+            self._initialize_simulator()
+        assert self.simulator is not None
+        pre: list[list[TickerData]] = []
+        # use a fresh simulator copy to avoid mutating shared state further
+        # Since simulator may have internal state, rebuild it for precompute
+        self.simulator.reset()
+        for _ in range(self.backtest_config.timesteps):
+            bars = self.simulator.next_bars()
+            # store as-is (TickerData are Pydantic models; they’re immutable enough for read)
+            pre.append(bars)
+        self._precomputed = pre
+        # reset shared current_step for non-client get_next_bar
+        self.current_step = 0
+
+    async def get_next_bar_for_client(self, client_id: str) -> Optional[List[TickerData]]:
+        # Ensure precomputed bars exist
+        self._ensure_precomputed()
+        # init lock and step
+        if client_id not in self.step_locks:
+            self.step_locks[client_id] = asyncio.Lock()
+        if client_id not in self.client_steps:
+            self.client_steps[client_id] = 0
+        async with self.step_locks[client_id]:
+            idx = self.client_steps[client_id]
+            if idx >= len(self._precomputed):
+                return None
+            self.client_steps[client_id] = idx + 1
+            return self._precomputed[idx]
     
     def _initialize_simulator(self):
         """Initialize the simulator based on model type"""

@@ -81,14 +81,82 @@ class DataSourceInterface(ABC):
         """
         pass
     
-    async def _notify_callback(self, kind: str, payload: Any):
+    async def _notify_callback(self, kind_or_payload: Any, payload: Optional[Any] = None):
+        """
+        Notify the subscribed callback.
+
+        Supports both calling conventions used in tests and older code:
+          - _notify_callback(kind, payload)
+          - _notify_callback(payload)  (kind is inferred as "price_update" or taken from payload["type"])
+
+        This method will:
+          - Normalize TickerData models to plain dicts before invoking the callback.
+          - Update self.current_prices using the normalized payload.
+          - Attempt to call the callback with (kind, payload) and fall back to (payload,) if necessary.
+          - Support both async and sync callbacks.
+        """
+        if payload is None:
+            # Single-argument form: treat argument as the payload
+            payload = kind_or_payload
+            if isinstance(payload, dict) and payload.get("type"):
+                kind = payload.get("type")
+            else:
+                kind = "price_update"
+        else:
+            kind = kind_or_payload
+
+        # Normalize payloads for price updates to a list of dicts and update current_prices
+        try:
+            if kind == "price_update" and payload is not None:
+                normalized = []
+                for tick in payload:
+                    # Convert Pydantic model instances to dicts if necessary
+                    if hasattr(tick, "model_dump"):
+                        d = tick.model_dump()
+                    elif isinstance(tick, dict):
+                        d = tick
+                    else:
+                        # Best-effort conversion from objects with attributes
+                        try:
+                            d = {
+                                "ticker": getattr(tick, "ticker", None),
+                                "close": getattr(tick, "close", None),
+                                "timestamp": getattr(tick, "timestamp", None),
+                            }
+                        except Exception:
+                            d = tick
+                    # Update current_prices if we have ticker & close
+                    try:
+                        if isinstance(d, dict) and d.get("ticker") is not None and d.get("close") is not None:
+                            self.current_prices[d["ticker"]] = d["close"]
+                    except Exception:
+                        pass
+                    normalized.append(d)
+                payload = normalized
+            else:
+                # For other message types, if payload contains price-like dicts, update current_prices
+                if isinstance(payload, list):
+                    for item in payload:
+                        if isinstance(item, dict) and "ticker" in item and "close" in item:
+                            try:
+                                self.current_prices[item["ticker"]] = item["close"]
+                            except Exception:
+                                pass
+        except Exception:
+            logging.exception("Error while normalizing payload for callback")
+
+        # Invoke callback with flexible signature handling
         if self._callback:
             try:
-                if kind == "price_update":
-                    # keep current_prices up-to-date
-                    for tick in payload:
-                        self.current_prices[tick.ticker] = tick.close
-                await self._callback(kind, payload)
+                try:
+                    res = self._callback(kind, payload)
+                except TypeError:
+                    # Callback may accept a single argument (payload)
+                    res = self._callback(payload)
+
+                # Await if the callback returned a coroutine / awaitable
+                if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                    await res
             except Exception:
                 logging.exception("Error in data source callback")
         else:

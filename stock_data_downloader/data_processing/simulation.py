@@ -9,6 +9,7 @@ import numpy as np
 import asyncio
 from stock_data_downloader.models import GBMConfig, HestonConfig, TickerConfig, TickerData
 from typing import Protocol
+from copy import deepcopy
 
 def _calculate_gbm_step(
     mean: float, sd: float, rng: random.Random, last_price: float, interval: float
@@ -53,8 +54,9 @@ class HestonSimulator(ISimulator):
         dt: float,
         seed: Optional[int] = None,
     ):
-        # per-instance RNG for determinism
+        # Ensure deterministic behaviour regardless of NumPy global RNG state
         self._rng = np.random.default_rng(seed)
+        self.start_prices = start_prices.copy()
 
         self.dt = dt
         self.start_time = datetime.now(timezone.utc)
@@ -70,7 +72,7 @@ class HestonSimulator(ISimulator):
             logger.warning(f"{len(invalid_henson_stats)} tickers dont have henson stats")
         self.start_prices = start_prices
         self.stats = strict_stats  # now .heston is never None
-        self.current_prices = start_prices.copy()
+        self.current_prices = deepcopy(start_prices)
         self.current_variances = {
             t: cfg.heston.theta for t, cfg in self.stats.items()
         }
@@ -131,7 +133,7 @@ class HestonSimulator(ISimulator):
     
     def reset(self) -> None:
         self.step_idx = 0
-        self.current_prices = self.start_prices.copy()
+        self.current_prices = deepcopy(self.start_prices)
 
 
 @dataclass
@@ -170,8 +172,8 @@ class GBMSimulator(ISimulator):
             logger.warning(f"{len(invalid)} tickers missing GBM config: {invalid}")
 
         self.stats = strict_stats
-        self.start_prices = start_prices
-        self.current_prices = start_prices.copy()
+        self.start_prices = deepcopy(start_prices)
+        self.current_prices = deepcopy(start_prices)
         self.step_idx = 0
 
     def next_bars(self) -> list[TickerData]:

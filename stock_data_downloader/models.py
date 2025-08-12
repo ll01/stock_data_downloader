@@ -78,13 +78,14 @@ class ServerConfig(BaseModel):
 
 class TestExchangeConfig(BaseModel):
     type: Literal["test"]
-
+    maker_fee_bps: float = 0.0
+    taker_fee_bps: float = 5.0
+    slippage_bps: float = 0.0
 
 class HyperliquidExchangeConfig(BaseModel):
     type: Literal["hyperliquid"]
     network: Literal["mainnet", "testnet"] = "mainnet"
     api_config: dict[str, str]  # secret_key, wallet_address
-
 
 class CCXTExchangeConfig(BaseModel):
     type: Literal["ccxt"]
@@ -94,11 +95,9 @@ class CCXTExchangeConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     api_config: dict[str, str] 
 
-
 class ExchangeConfig(BaseModel):
     exchange: TestExchangeConfig | HyperliquidExchangeConfig | CCXTExchangeConfig
     
-
 class AppConfig(BaseModel):
     """Complete application configuration"""
     data_source: DataSourceConfig

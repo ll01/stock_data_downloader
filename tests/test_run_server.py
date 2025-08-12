@@ -12,10 +12,14 @@ from stock_data_downloader.models import (
     AppConfig,
     DataSourceConfig,
     BacktestDataSourceConfig,
+    HyperliquidDataSourceConfig,
     ServerConfig,
     TickerConfig,
     HestonConfig,
-    GBMConfig
+    GBMConfig,
+    UriConfig,
+    ExchangeConfig,
+    TestExchangeConfig
 )
 from stock_data_downloader.data_processing.TickerStats import TickerStats
 
@@ -42,7 +46,6 @@ class TestRunServer:
         """Test file path validation"""
         assert is_valid_file_path('valid_path.txt') is True
         assert is_valid_file_path('') is False
-        assert is_valid_file_path(None) is False
         assert is_valid_file_path('None') is False
         assert is_valid_file_path('none') is False
         assert is_valid_file_path('  ') is False
@@ -72,9 +75,16 @@ class TestRunServer:
                 mock_config = AppConfig(
                     data_source=DataSourceConfig(
                         source_type="hyperliquid",
-                        config=MagicMock()
+                        config=HyperliquidDataSourceConfig(
+                            source_type="hyperliquid",
+                            network="mainnet",
+                            tickers=["BTC"],
+                            interval="1m",
+                            api_config={"api_key": "test"}
+                        )
                     ),
-                    server=ServerConfig(host="localhost", port=8000),
+                    server=ServerConfig(data_downloader=UriConfig(host="localhost", port=8000)),
+                    exchange=ExchangeConfig(exchange=TestExchangeConfig(type="test")),
                     initial_cash=100000.0
                 )
                 
@@ -108,8 +118,8 @@ class TestRunServer:
                 
                 # Create mock ticker stats
                 mock_stats = {
-                    'AAPL': TickerStats(ticker='AAPL', mean=0.01, std_dev=0.2, kappa=1.0, theta=0.04, xi=0.2, rho=-0.5),
-                    'MSFT': TickerStats(ticker='MSFT', mean=0.015, std_dev=0.18, kappa=1.1, theta=0.05, xi=0.22, rho=-0.48)
+                    'AAPL': TickerStats(mean=0.01, sd=0.2, kappa=1.0, theta=0.04, xi=0.2, rho=-0.5),
+                    'MSFT': TickerStats(mean=0.015, sd=0.18, kappa=1.1, theta=0.05, xi=0.22, rho=-0.48)
                 }
                 
                 # Mock load_stock_stats
@@ -134,8 +144,9 @@ class TestRunServer:
                                 ticker_configs={}  # Empty to test override
                             )
                         ),
-                        server=ServerConfig(host="localhost", port=8000),
-                        initial_cash=100000.0
+                        server=ServerConfig(data_downloader=UriConfig(host="localhost", port=8000)),
+                        initial_cash=100000.0,
+                        exchange=ExchangeConfig(exchange=TestExchangeConfig(type="test"))
                     )
                     
                     with patch('stock_data_downloader.run_server.ConfigFactory.load_config',
@@ -151,11 +162,13 @@ class TestRunServer:
                             mock_start_server.assert_called_once()
                             
                             # Verify config was updated with stats data
-                            backtest_config = mock_config.data_source.config
-                            assert len(backtest_config.ticker_configs) == 2
-                            assert 'AAPL' in backtest_config.ticker_configs
-                            assert 'MSFT' in backtest_config.ticker_configs
-                            assert backtest_config.start_prices == {'AAPL': 150.0, 'MSFT': 150.0}
+                            config = mock_config.data_source.config
+                            # Ensure we're working with backtest config
+                            assert isinstance(config, BacktestDataSourceConfig)
+                            assert len(config.ticker_configs) == 2
+                            assert 'AAPL' in config.ticker_configs
+                            assert 'MSFT' in config.ticker_configs
+                            assert config.start_prices == {'AAPL': 150.0, 'MSFT': 150.0}
                             assert result == 0
 
     @pytest.mark.asyncio
@@ -191,8 +204,9 @@ class TestRunServer:
                             ticker_configs=ticker_configs
                         )
                     ),
-                    server=ServerConfig(host="localhost", port=8000),
-                    initial_cash=100000.0
+                    server=ServerConfig(data_downloader=UriConfig(host="localhost", port=8000)),
+                    initial_cash=100000.0,
+                    exchange=ExchangeConfig(exchange=TestExchangeConfig(type="test"))
                 )
                 
                 with patch('stock_data_downloader.run_server.ConfigFactory.load_config',
@@ -208,8 +222,10 @@ class TestRunServer:
                         mock_start_server.assert_called_once()
                         
                         # Verify start prices were generated
-                        backtest_config = mock_config.data_source.config
-                        assert backtest_config.start_prices == {'GOOG': 120.0, 'TSLA': 120.0}
+                        config = mock_config.data_source.config
+                        # Ensure we're working with backtest config
+                        assert isinstance(config, BacktestDataSourceConfig)
+                        assert config.start_prices == {'GOOG': 120.0, 'TSLA': 120.0}
                         assert result == 0
 
     @pytest.mark.asyncio

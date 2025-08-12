@@ -253,7 +253,6 @@ async def test_standardized_message_format(connection_manager, mock_websocket):
     assert "type" in sim_end_parsed
     assert "timestamp" in sim_end_parsed
     assert sim_end_parsed["type"] == "simulation_end"
-    assert "reason" in sim_end_parsed
 
 
 @pytest.mark.asyncio

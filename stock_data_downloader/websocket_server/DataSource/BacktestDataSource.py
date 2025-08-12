@@ -1,4 +1,6 @@
 import asyncio
+
+from enum import Enum
 from typing import Dict, Any, List, AsyncGenerator, Optional, Callable, cast, Awaitable
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
     DataSourceInterface,
@@ -17,15 +19,61 @@ from stock_data_downloader.models import (
 import logging
 logger = logging.getLogger(__name__)
 
+class BackTestMode(Enum):
+    synchronous = "synchronous"
+    asynchronous = "async"
+    
+    
 
 class BacktestDataSource(DataSourceInterface):
     def __init__(
-        self, ticker_configs: Dict[str, TickerConfig], backtest_config: BacktestDataSourceConfig,
-        ready_for_next_bar: Optional[asyncio.Event] = None
+        self,
+        ticker_configs: Optional[Dict[str, TickerConfig]] = None,
+        backtest_config: Optional[BacktestDataSourceConfig] = None,
+        global_config: Optional[Any] = None,
+        ready_for_next_bar: Optional[asyncio.Event] = None,
     ):
-        super().__init__(tickers=list(ticker_configs.keys()))
-        self.backtest_config = backtest_config
-        self.ticker_configs = ticker_configs
+        """
+        Initialize BacktestDataSource.
+
+        This constructor accepts both the new explicit signature and older
+        kwargs-based construction with global_config for backward compatibility.
+
+        Args:
+            ticker_configs: Dict of ticker configurations.
+            backtest_config: BacktestDataSourceConfig instance.
+            global_config: Optional global_config parameter from older API versions.
+            ready_for_next_bar: Event used to pace synchronous backtests.
+        """
+        # Handle legacy init pattern where a single config dict was provided
+        if backtest_config is None and global_config is not None:
+            backtest_config = global_config
+        if ticker_configs is None and hasattr(backtest_config, "ticker_configs"):
+            ticker_configs = getattr(backtest_config, "ticker_configs", {})
+
+        # Support legacy dict configs
+        if isinstance(backtest_config, dict):
+            try:
+                backtest_config = BacktestDataSourceConfig(**backtest_config)
+            except Exception as e:
+                logger.error(f"Failed to convert dict to BacktestDataSourceConfig: {e}", exc_info=True)
+                raise
+
+        # Ensure we have non-None defaults to avoid runtime errors
+        self.backtest_config = backtest_config or BacktestDataSourceConfig(
+            source_type="backtest",
+            backtest_model_type="gbm",
+            start_prices={},
+            timesteps=0,
+            interval=0.0,
+            ticker_configs={}
+        )
+        # Ensure ticker_configs from config if not directly provided
+        if not ticker_configs and hasattr(self.backtest_config, "ticker_configs"):
+            self.ticker_configs = self.backtest_config.ticker_configs
+        else:
+            self.ticker_configs = ticker_configs or {}
+        super().__init__(tickers=list(self.ticker_configs.keys()))
         self.ready_for_next_bar = ready_for_next_bar
         self.simulator: Optional[ISimulator] = None
         self._callback = None
@@ -38,13 +86,22 @@ class BacktestDataSource(DataSourceInterface):
         self.client_steps: Dict[str, int] = {}
         self.step_locks: Dict[str, asyncio.Lock] = {}
         # default to pull mode for backtests
-        self.pull_mode: bool = True
+        # Accept either enum or string value for backtest_mode for backward compatibility
+        mode = getattr(backtest_config, "backtest_mode", None)
+        self.synchronous_mode: bool = (
+            mode == BackTestMode.synchronous or mode == BackTestMode.synchronous.value
+        )
+        # Expose pull_mode property for server
+        self.pull_mode = self.synchronous_mode
 
         # Log ticker count for debugging
         logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
-
-    def enable_pull_mode(self, on: bool = True):
-        self.pull_mode = on
+        logger.info(f"Backtest mode: {'synchronous (pull)' if self.synchronous_mode else 'asynchronous (push)'}")
+        
+    def enable_pull_mode(self, enable: bool):
+        """Enable or disable pull mode for backtest data source"""
+        self.pull_mode = enable
+        self.synchronous_mode = enable
 
     async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
         """
@@ -70,12 +127,14 @@ class BacktestDataSource(DataSourceInterface):
         """
     
         self._callback = callback
-        if not self.pull_mode:
+        if not self.synchronous_mode:
             self._running = True
             asyncio.create_task(self.stream_price_updates())
         else:
             # pull mode: do not auto-stream; server drives via get_next_bar_for_client
             self._running = False
+            # Precompute all bars immediately for synchronous mode
+            self._ensure_precomputed()
 
     
 
@@ -186,16 +245,27 @@ class BacktestDataSource(DataSourceInterface):
     async def get_historical_data(
         self, tickers: List[str] = [], interval: str = ""
     ) -> List[TickerData]:
-        # BacktestDataSource does not provide historical data directly
-        # Generate realistic historical data (10 bars)
-        historical_data = []
-        # # Ensure simulator is initialized
-        # if self.simulator is None:
-        #     self._initialize_simulator()
-        # assert self.simulator is not None, "Simulator must be initialized for historical data"
-        # for _ in range(10):
-        #     historical_data.extend(self.simulator.next_bars())
-        return historical_data
+        """Return historical data for backtesting"""
+        # For backtesting, we simulate historical data
+        if not hasattr(self, 'combined_data'):
+            # Initialize simulator if needed
+            if self.simulator is None:
+                self._initialize_simulator()
+            assert self.simulator is not None, "Simulator must be initialized for historical data"
+            
+            # Precompute all bars
+            self.combined_data = []
+            self.simulator.reset()
+            for _ in range(self.backtest_config.timesteps):
+                bars = self.simulator.next_bars()
+                self.combined_data.extend(bars)
+        
+        # If no tickers are specified, return all data
+        if not tickers:
+            return self.combined_data
+        
+        # Filter data for the requested tickers
+        return [bar for bar in self.combined_data if bar.ticker in tickers]
 
     async def unsubscribe_realtime_data(self):
         self._callback = None
@@ -251,19 +321,35 @@ class BacktestDataSource(DataSourceInterface):
         self.current_step = 0
 
     async def get_next_bar_for_client(self, client_id: str) -> Optional[List[TickerData]]:
+        """
+        Get the next bar of data for a specific client in synchronous (pull) mode.
+        
+        This method is thread-safe and maintains separate state for each client.
+        """
         # Ensure precomputed bars exist
         self._ensure_precomputed()
-        # init lock and step
+        
+        # Initialize client state if not exists
         if client_id not in self.step_locks:
             self.step_locks[client_id] = asyncio.Lock()
         if client_id not in self.client_steps:
             self.client_steps[client_id] = 0
+            
         async with self.step_locks[client_id]:
-            idx = self.client_steps[client_id]
-            if idx >= len(self._precomputed):
+            current_step = self.client_steps[client_id]
+            
+            # Check if simulation has ended
+            if current_step >= len(self._precomputed):
+                # Signal end of simulation
+                if self._callback:
+                    await self._notify_callback("simulation_end", None)
                 return None
-            self.client_steps[client_id] = idx + 1
-            return self._precomputed[idx]
+                
+            # Get the next bar
+            bar_data = self._precomputed[current_step]
+            self.client_steps[client_id] = current_step + 1
+            
+            return bar_data
     
     def _initialize_simulator(self):
         """Initialize the simulator based on model type"""
@@ -271,14 +357,17 @@ class BacktestDataSource(DataSourceInterface):
         for ticker, price in self.backtest_config.start_prices.items():
             self.current_prices[ticker] = price
         
-        if self.backtest_config.backtest_model_type == "heston":
+        # Use model type from config, default to GBM if not specified
+        model_type = self.backtest_config.backtest_model_type or "gbm"
+        
+        if model_type == "heston":
             self.simulator = HestonSimulator(
                 stats=self.ticker_configs,
                 start_prices=self.current_prices,
                 dt=self.backtest_config.interval,
                 seed=self.backtest_config.seed,
             )
-        elif self.backtest_config.backtest_model_type in ["gbm", "brownian"]:
+        elif model_type in ["gbm", "brownian"]:
             self.simulator = GBMSimulator(
                 stats=self.ticker_configs,
                 start_prices=self.backtest_config.start_prices,
@@ -286,4 +375,4 @@ class BacktestDataSource(DataSourceInterface):
                 seed=self.backtest_config.seed,
             )
         else:
-            raise ValueError(f"Unsupported backtest model type: {self.backtest_config.backtest_model_type}")
+            raise ValueError(f"Unsupported backtest model type: {model_type}")

@@ -17,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 class TestExchange(ExchangeInterface):
     __test__ = False  # Prevent pytest from collecting this as a test case
+    order_cls = Order
     """Test exchange implementation that uses a Portfolio for testing without real market connection"""
 
-    def __init__(self, portfolio: Portfolio):
+    def __init__(self, portfolio: Portfolio, maker_fee_bps: float = 0.0, taker_fee_bps: float = 5.0, slippage_bps: float = 0.0):
         """
         Initialize the test exchange
 
@@ -34,6 +35,9 @@ class TestExchange(ExchangeInterface):
         self.subscription_id_counter = 0
         self.subscription_callbacks = {}
         self.portfolio = portfolio
+        self.maker_fee_bps = maker_fee_bps
+        self.taker_fee_bps = taker_fee_bps
+        self.slippage_bps = slippage_bps
         try:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:  # No running event loop
@@ -91,22 +95,40 @@ class TestExchange(ExchangeInterface):
                 else:
                     self.active_orders[order_id] = order_info
 
+                adjusted_price = order.price
+                if side == "buy":
+                    adjusted_price = order.price * (1 + self.slippage_bps / 10000.0)
+                elif side == "sell":
+                    adjusted_price = order.price * (1 - self.slippage_bps / 10000.0)
+
+                # Apply fees
+                slippage_adjusted_price = adjusted_price
+                if side == "buy":
+                    adjusted_price = slippage_adjusted_price * (1 + self.taker_fee_bps / 10000.0)
+                    fee_paid = order.quantity * slippage_adjusted_price * (self.taker_fee_bps / 10000.0)
+                elif side == "sell":
+                    adjusted_price = slippage_adjusted_price * (1 - self.taker_fee_bps / 10000.0)
+                    fee_paid = order.quantity * slippage_adjusted_price * (self.taker_fee_bps / 10000.0)
+                else:
+                    fee_paid = 0.0
+
                 results.append(
                     OrderResult(
                         cloid=order.cloid or "",
                         oid=order_id,
                         status=status,
-                        price=order.price,
+                        price=adjusted_price,
                         quantity=order.quantity,
                         symbol=order.symbol,
                         side=side,
                         success=status == "FILLED",
                         timestamp=order.timestamp,
+                        fee_paid=fee_paid,
                     )
                 )
 
                 logger.info(
-                    f"Order {order_id} {side} {order.quantity} {order.symbol} @ {order.price}: {status}"
+                    f"Order {order_id} {side} {order.quantity} {order.symbol} @ {adjusted_price}: {status}"
                 )
 
             except Exception as e:

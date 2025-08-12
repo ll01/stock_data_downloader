@@ -49,11 +49,11 @@ class TestDataSourceFactory:
         # Verify data source type and configuration
         assert isinstance(data_source, BacktestDataSource)
         assert data_source.tickers == ["AAPL"]
-        assert data_source.backtest_config["backtest_model_type"] == "heston"
-        assert data_source.backtest_config["start_prices"] == {"AAPL": 150.0}
-        assert data_source.backtest_config["timesteps"] == 100
-        assert data_source.backtest_config["interval"] == 1.0/252
-        assert data_source.backtest_config["seed"] == 42
+        assert data_source.backtest_config.backtest_model_type == "heston"
+        assert data_source.backtest_config.start_prices == {"AAPL": 150.0}
+        assert data_source.backtest_config.timesteps == 100
+        assert data_source.backtest_config.interval == 1.0/252
+        assert data_source.backtest_config.seed == 42
 
     def test_create_backtest_data_source_gbm(self):
         """Test creating a BacktestDataSource with GBM model"""
@@ -83,11 +83,11 @@ class TestDataSourceFactory:
         # Verify data source type and configuration
         assert isinstance(data_source, BacktestDataSource)
         assert data_source.tickers == ["TSLA"]
-        assert data_source.backtest_config["backtest_model_type"] == "gbm"
-        assert data_source.backtest_config["start_prices"] == {"TSLA": 200.0}
-        assert data_source.backtest_config["timesteps"] == 50
-        assert data_source.backtest_config["interval"] == 1.0/252
-        assert data_source.backtest_config["seed"] == 123
+        assert data_source.backtest_config.backtest_model_type == "gbm"
+        assert data_source.backtest_config.start_prices == {"TSLA": 200.0}
+        assert data_source.backtest_config.timesteps == 50
+        assert data_source.backtest_config.interval == 1.0/252
+        assert data_source.backtest_config.seed == 123
 
     def test_create_hyperliquid_data_source(self):
         """Test creating a HyperliquidDataSource"""
@@ -127,7 +127,14 @@ class TestDataSourceFactory:
         # Create test config with invalid source type
         config = DataSourceConfig(
             source_type="invalid_type",
-            config=MagicMock()  # Just a placeholder
+            config=BacktestDataSourceConfig(
+                source_type="backtest",
+                backtest_model_type="gbm",
+                start_prices={},
+                timesteps=1,
+                interval=1.0,
+                ticker_configs={}
+            )  # Minimal valid config to satisfy Pydantic
         )
 
         # Attempt to create data source

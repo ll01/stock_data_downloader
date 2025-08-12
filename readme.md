@@ -1,5 +1,28 @@
 # Stock Data Downloader - Testing & Backtest Pull-Mode
 
+## Configuration for Fees and Slippage
+When using the test exchange (`exchange.type: test`), the following parameters control transaction costs:
+- `maker_fee_bps`: Fee rate for maker orders in basis points (default: 0.0)
+- `taker_fee_bps`: Fee rate for taker orders in basis points (default: 5.0)
+- `slippage_bps`: Expected slippage in basis points (default: 0.0)
+
+*Note: 1 basis point (bps) = 0.01%, so 5 bps = 0.05%.*
+
+These values are applied during order execution:
+- Buy orders: `execution_price = price × (1 + slippage_bps/10000) × (1 + taker_fee_bps/10000)`
+- Sell orders: `execution_price = price × (1 - slippage_bps/10000) × (1 - taker_fee_bps/10000)`
+
+Example configuration in `config_examples/test_config.yml`:
+```yaml
+exchange:
+  type: test
+  maker_fee_bps: 0.0  # 0.00% (1 bps = 0.01%)
+  taker_fee_bps: 5.0  # 0.05% (1 bps = 0.01%)
+  slippage_bps: 10.0  # 0.10% (1 bps = 0.01%)
+```
+
+The `fee_paid` field in order results shows the calculated fee amount for each transaction.
+
 This document outlines how to run core tests, use the new backtest pull-mode for multi-instance simulations, and (optionally) run Hyperliquid integration tests. It also notes Windows-specific asyncio behavior and safety considerations for exchange testing.
 
 ## Backtest (Pull Mode) Overview

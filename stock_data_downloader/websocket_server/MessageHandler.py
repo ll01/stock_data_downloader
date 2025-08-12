@@ -1,4 +1,5 @@
 import copy
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
@@ -6,6 +7,7 @@ from typing import Any, Dict, List, Union
 
 from stock_data_downloader.models import TickerData
 
+from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
 from stock_data_downloader.websocket_server.trading_system import TradingSystem
@@ -28,9 +30,26 @@ class HandleResult:
 class MessageHandler:
     async def handle_message(
         self,
-        data: Dict[str, Any],
+        raw_data: Union[Dict, str],
         trading_system: TradingSystem,
+        connection_manager: ConnectionManager
     ) -> HandleResult:
+        # Handle JSON parsing if raw_data is a string
+        if isinstance(raw_data, str):
+            try:
+                data = json.loads(raw_data)
+            except json.JSONDecodeError:
+                return HandleResult(
+                    result_type="error",
+                    payload={
+                        "status": "error",
+                        "code": "INVALID_JSON",
+                        "message": "Invalid JSON format received"
+                    }
+                )
+        else:
+            data = raw_data
+
         handle_result = self._send_rejection(data, reason="invalid action")
         action = data.get("action")
         logging.debug(action)
@@ -38,22 +57,31 @@ class MessageHandler:
             handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
 
         elif action == "next_bar":
-            # Per-client stepping: determine client_id from trading_system connection manager
+            # Per-client stepping: accept either a client_id (preferred) or websocket (legacy)
+            client_id = data.get("_client_id")
             websocket = data.get("_ws")
-            if websocket is None:
-                return self._send_rejection(data, reason="Missing websocket context for next_bar")
-            client_id = trading_system.connection_manager.get_client_id(websocket) if hasattr(trading_system, "connection_manager") else None
+            if not client_id:
+                if websocket is None:
+                    return self._send_rejection(data, reason="Missing websocket context for next_bar")
+                client_id = connection_manager.get_client_id(websocket)
             if not client_id:
                 return self._send_rejection(data, reason="Unknown client for next_bar")
-            # If push mode, next_bar is not supported
-            pull_mode = getattr(trading_system.data_source, "pull_mode", False)
+            # Accept either 'pull_mode' or legacy 'synchronous_mode' flag on data sources
+            pull_mode = getattr(trading_system.data_source, "pull_mode", False) or getattr(trading_system.data_source, "synchronous_mode", False)
             if not pull_mode:
                 return self._send_rejection(data, reason="next_bar not supported in push mode")
             try:
-                # BacktestDataSource: fetch next bar for this client
-                next_batch = await trading_system.data_source.get_next_bar(client_id)  # type: ignore[attr-defined]
+                # Prefer client-scoped API if available
+                if hasattr(trading_system.data_source, "get_next_bar_for_client"):
+                    next_batch = await trading_system.data_source.get_next_bar_for_client(client_id)  # type: ignore[attr-defined]
+                else:
+                    # Try calling get_next_bar with client_id where supported, otherwise fallback
+                    try:
+                        next_batch = await trading_system.data_source.get_next_bar(client_id)  # type: ignore[attr-defined]
+                    except TypeError:
+                        next_batch = await trading_system.data_source.get_next_bar()
             except AttributeError:
-                # Fallback: single cursor
+                # Final fallback to generic single-cursor API
                 next_batch = await trading_system.data_source.get_next_bar()
             if not next_batch:
                 return HandleResult(result_type="simulation_end", payload={})
@@ -255,12 +283,22 @@ class MessageHandler:
         return HandleResult(result_type="trade_execution", payload=payload)
 
     def _send_rejection(self, data: Dict, reason: str, field: str | None = None):
-        """Standard rejection format with field-level errors"""
+        """Standard rejection format with field-level errors.
+        
+        This function removes internal-only fields (like the live websocket
+        object under the '_ws' key or internal client id under '_client_id')
+        before returning the payload so we don't leak non-serializable or
+        sensitive objects back to clients.
+        """
+        sanitized_order = dict(data)
+        # remove internal runtime objects before returning to client
+        sanitized_order.pop("_ws", None)
+        sanitized_order.pop("_client_id", None)
         payload = {
             "status": "rejected",
-            "order": data,
+            "order": sanitized_order,
             "reason": reason,
             "valid_actions": ["buy", "sell", "reset"],
             "field": field or "unknown",
         }
-        return HandleResult(result_type="trade_rejection", payload=payload)
+        return HandleResult(result_type=TRADE_REJECTION, payload=payload)

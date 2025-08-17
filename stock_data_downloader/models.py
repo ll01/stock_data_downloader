@@ -1,3 +1,4 @@
+from enum import Enum
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union, Literal
 from dataclasses import dataclass
@@ -41,6 +42,10 @@ class CCXTDataSourceConfig(BaseModel):
     options: Optional[Dict[str, Any]] = None
     api_config: Dict[str, Any] = {}
     
+class BackTestMode(str, Enum):
+    PUSH = "push"
+    PULL = "pull"
+    
 class BacktestDataSourceConfig(BaseModel):
     source_type: str = "backtest"
     backtest_model_type: str = "gbm"
@@ -49,8 +54,16 @@ class BacktestDataSourceConfig(BaseModel):
     interval: float
     seed: Optional[int] = None
     ticker_configs: Dict[str, TickerConfig]
-    backtest_mode: Optional[str] = None
+    # Optional override: how many historical timesteps to return when a client
+    # requests historical data. When unset, the data source default is used
+    # (BacktestDataSource.get_historical_data defaults to 20% of timesteps).
+    history_steps: Optional[int] = None
+    # Default to PUSH so subscribe_realtime_data emits data by default.
+    # Tests that require pull-mode should explicitly set backtest_mode to BackTestMode.PULL.
+    backtest_mode: Optional[BackTestMode] = BackTestMode.PUSH
 
+
+    
 class HyperliquidDataSourceConfig(BaseModel):
     """Configuration for Hyperliquid data source"""
     source_type: Literal["hyperliquid"]

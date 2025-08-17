@@ -10,6 +10,7 @@ from hyperliquid.utils.types import CandleSubscription
 from hyperliquid.websocket_manager import WebsocketManager
 
 from stock_data_downloader.models import TickerData
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.websocket_server.thread_cancel_helper import _async_raise, find_threads_by_name
 
@@ -187,6 +188,13 @@ class HyperliquidDataSource(DataSourceInterface):
             await self.subscribe_realtime_data(old_callback)
         logger.info("Hyperliquid data source reset.")
 
-    async def get_next_bar(self) -> Optional[List[TickerData]]:
+    async def get_next_bar(self) -> BarResponse:
         # Not applicable for this real-time-only source.
-        return None
+        return BarResponse(data=[], error_message="This data source does not support get_next_bar.")
+
+    async def get_next_bar_for_client(self, client_id: str) -> BarResponse:
+        """
+        Real-time sources do not support per-client stepping. Return a BarResponse
+        with an explicit error_message (string) so callers can handle it consistently.
+        """
+        return BarResponse(data=[], error_message="This data source does not support per-client next_bar.")

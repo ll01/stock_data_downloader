@@ -27,17 +27,23 @@ class ConfigFactory:
     @staticmethod
     def load_config(config_path: str) -> AppConfig:
         """
-        Load configuration from a YAML file
+        Load configuration from a YAML or JSON file
 
         Args:
-            config_path: Path to the YAML configuration file
+            config_path: Path to the configuration file
 
         Returns:
             AppConfig object with the loaded configuration
         """
         try:
             with open(config_path, "r") as f:
-                raw_config = yaml.safe_load(f)
+                # Determine file type by extension
+                if config_path.endswith('.json'):
+                    import json
+                    raw_config = json.load(f)
+                else:
+                    # Default to YAML for .yaml or .yml files
+                    raw_config = yaml.safe_load(f)
 
             return ConfigFactory.create_app_config(raw_config)
         except Exception as e:
@@ -145,6 +151,8 @@ class ConfigFactory:
                 interval=raw_config.get("interval", 1.0 / 252),
                 seed=raw_config.get("seed"),
                 ticker_configs=ticker_configs,
+                history_steps=raw_config.get("history_steps"),
+                backtest_mode=raw_config.get("backtest_mode"),
             )
         elif source_type == "hyperliquid":
             # Create HyperliquidDataSourceConfig

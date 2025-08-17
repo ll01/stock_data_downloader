@@ -2,6 +2,7 @@ import asyncio
 
 from enum import Enum
 from typing import Dict, Any, List, AsyncGenerator, Optional, Callable, cast, Awaitable
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
     DataSourceInterface,
 )
@@ -11,6 +12,7 @@ from stock_data_downloader.data_processing.simulation import (
     ISimulator,
 )
 from stock_data_downloader.models import (
+    BackTestMode,
     BacktestDataSourceConfig,
     TickerConfig,
     TickerData,
@@ -19,10 +21,7 @@ from stock_data_downloader.models import (
 import logging
 logger = logging.getLogger(__name__)
 
-class BackTestMode(Enum):
-    synchronous = "synchronous"
-    asynchronous = "async"
-    
+
     
 
 class BacktestDataSource(DataSourceInterface):
@@ -85,23 +84,15 @@ class BacktestDataSource(DataSourceInterface):
         # per-client step tracking
         self.client_steps: Dict[str, int] = {}
         self.step_locks: Dict[str, asyncio.Lock] = {}
-        # default to pull mode for backtests
-        # Accept either enum or string value for backtest_mode for backward compatibility
-        mode = getattr(backtest_config, "backtest_mode", None)
-        self.synchronous_mode: bool = (
-            mode == BackTestMode.synchronous or mode == BackTestMode.synchronous.value
-        )
-        # Expose pull_mode property for server
-        self.pull_mode = self.synchronous_mode
+        # Number of precomputed time-steps that have been exposed as historical data
+        # This is used to start per-client pointers after the historical window so
+        # clients do not receive duplicate timestamps.
+        self._historical_step_count: int = 0
+        self.mode =  self.backtest_config.backtest_mode or BackTestMode.PULL
 
         # Log ticker count for debugging
         logger.info(f"Initialized backtest data source with {len(self.tickers)} tickers: {self.tickers}")
-        logger.info(f"Backtest mode: {'synchronous (pull)' if self.synchronous_mode else 'asynchronous (push)'}")
-        
-    def enable_pull_mode(self, enable: bool):
-        """Enable or disable pull mode for backtest data source"""
-        self.pull_mode = enable
-        self.synchronous_mode = enable
+        logger.info(f"Backtest mode: {self.mode}")
 
     async def subscribe_realtime_data(self, callback: Callable[[str, Any], Awaitable[None]]):
         """
@@ -127,7 +118,7 @@ class BacktestDataSource(DataSourceInterface):
         """
     
         self._callback = callback
-        if not self.synchronous_mode:
+        if self.mode == BackTestMode.PUSH:
             self._running = True
             asyncio.create_task(self.stream_price_updates())
         else:
@@ -243,29 +234,65 @@ class BacktestDataSource(DataSourceInterface):
         #     raise
         
     async def get_historical_data(
-        self, tickers: List[str] = [], interval: str = ""
+        self, tickers: List[str] = [], interval: str = "", history_steps: Optional[int] = None
     ) -> List[TickerData]:
-        """Return historical data for backtesting"""
-        # For backtesting, we simulate historical data
-        if not hasattr(self, 'combined_data'):
-            # Initialize simulator if needed
-            if self.simulator is None:
-                self._initialize_simulator()
-            assert self.simulator is not None, "Simulator must be initialized for historical data"
-            
-            # Precompute all bars
-            self.combined_data = []
-            self.simulator.reset()
-            for _ in range(self.backtest_config.timesteps):
-                bars = self.simulator.next_bars()
-                self.combined_data.extend(bars)
-        
-        # If no tickers are specified, return all data
+        """Return historical data for backtesting.
+
+        If history_steps is provided, return only the most recent `history_steps`
+        timesteps. If not provided, default to 20% of precomputed timesteps
+        (minimum 1). This method sets `self._historical_step_count` to the
+        number of timesteps actually returned so clients will begin after that offset.
+
+        NOTE: This preserves the precomputed isolation semantics while avoiding
+        sending the entire simulation as history by default.
+        """
+        # Ensure the precomputed sequence exists (builds simulator once)
+        if self.simulator is None:
+            self._initialize_simulator()
+        assert self.simulator is not None, "Simulator must be initialized for historical data"
+
+        # Build precomputed if not already present
+        self._ensure_precomputed()
+
+        total_steps = len(self._precomputed)
+        if total_steps == 0:
+            self._historical_step_count = 0
+            return []
+
+    
+        if history_steps is None:
+            history_steps = max(1, int(round(0.2 * total_steps)))
+
+       
+        history_steps = max(0, min(history_steps, total_steps))
+
+       
+        if history_steps == total_steps:
+            selected_pre = self._precomputed
+        elif history_steps == 0:
+            selected_pre = []
+        else:
+            selected_pre = self._precomputed[:history_steps]
+
+        self._historical_step_count = len(selected_pre)
+
+        # Flatten selected_pre into combined_data
+        combined_data: List[TickerData] = []
+        for step_bars in selected_pre:
+            combined_data.extend(step_bars)
+
+        logger.debug(
+            f"BacktestDataSource: prepared {len(combined_data)} historical ticks "
+            f"spanning {self._historical_step_count} timesteps "
+            f"(requested_history_steps={history_steps}, total_steps={total_steps})"
+        )
+
+        # If no tickers are specified, return all flattened data
         if not tickers:
-            return self.combined_data
-        
+            return combined_data
+
         # Filter data for the requested tickers
-        return [bar for bar in self.combined_data if bar.ticker in tickers]
+        return [bar for bar in combined_data if bar.ticker in tickers]
 
     async def unsubscribe_realtime_data(self):
         self._callback = None
@@ -276,6 +303,8 @@ class BacktestDataSource(DataSourceInterface):
         self.client_steps.clear()
         self.step_locks.clear()
         self._precomputed.clear()
+        # Clear historical-step marker so new connections/historical requests will rebuild correctly
+        self._historical_step_count = 0
         if self.simulator is not None:
             self.simulator.reset()
         old_callback = self._callback
@@ -287,7 +316,13 @@ class BacktestDataSource(DataSourceInterface):
         self.client_steps.pop(client_id, None)
         self.step_locks.pop(client_id, None)
 
-    async def get_next_bar(self) -> Optional[List[TickerData]]:
+    async def get_next_bar(self) -> BarResponse:
+        if self.mode == BackTestMode.PUSH:
+            # In push mode, we don't support get_next_bar directly
+            return BarResponse(
+                data=[],
+                error_message="This data source does not support get_next_bar in push mode."
+            )
         # Initialize simulator if not already done
         if self.simulator is None:
             self._initialize_simulator()
@@ -295,11 +330,17 @@ class BacktestDataSource(DataSourceInterface):
 
         # Check if we've reached the end of the simulation
         if self.current_step >= self.backtest_config.timesteps:
-            return None
+            return BarResponse(
+                data=[],
+                error_message="End of backtest simulation reached."
+            )
 
         # Get the next bar and increment the step counter
         self.current_step += 1
-        return self.simulator.next_bars()
+        return BarResponse(
+            data=self.simulator.next_bars(),
+            error_message=None
+        )
 
     def _ensure_precomputed(self):
         if self._precomputed:
@@ -309,47 +350,49 @@ class BacktestDataSource(DataSourceInterface):
             self._initialize_simulator()
         assert self.simulator is not None
         pre: list[list[TickerData]] = []
-        # use a fresh simulator copy to avoid mutating shared state further
-        # Since simulator may have internal state, rebuild it for precompute
+    
         self.simulator.reset()
         for _ in range(self.backtest_config.timesteps):
             bars = self.simulator.next_bars()
-            # store as-is (TickerData are Pydantic models; they’re immutable enough for read)
             pre.append(bars)
         self._precomputed = pre
-        # reset shared current_step for non-client get_next_bar
+ 
         self.current_step = 0
 
-    async def get_next_bar_for_client(self, client_id: str) -> Optional[List[TickerData]]:
+    async def get_next_bar_for_client(self, client_id: str) -> BarResponse:
         """
         Get the next bar of data for a specific client in synchronous (pull) mode.
-        
-        This method is thread-safe and maintains separate state for each client.
+
+        Returns a BarResponse where `data` is a list of TickerData and
+        `error_message` is a string describing the end-of-simulation or an error.
         """
-        # Ensure precomputed bars exist
-        self._ensure_precomputed()
-        
-        # Initialize client state if not exists
-        if client_id not in self.step_locks:
-            self.step_locks[client_id] = asyncio.Lock()
-        if client_id not in self.client_steps:
-            self.client_steps[client_id] = 0
-            
-        async with self.step_locks[client_id]:
-            current_step = self.client_steps[client_id]
-            
-            # Check if simulation has ended
-            if current_step >= len(self._precomputed):
-                # Signal end of simulation
-                if self._callback:
-                    await self._notify_callback("simulation_end", None)
-                return None
-                
-            # Get the next bar
-            bar_data = self._precomputed[current_step]
-            self.client_steps[client_id] = current_step + 1
-            
-            return bar_data
+        try:
+            # Ensure precomputed bars exist
+            self._ensure_precomputed()
+
+            # Initialize client state if not exists
+            if client_id not in self.step_locks:
+                self.step_locks[client_id] = asyncio.Lock()
+            if client_id not in self.client_steps:
+                # Start the client's pointer after any historical timesteps already sent.
+                start_step = getattr(self, "_historical_step_count", 0)
+                self.client_steps[client_id] = start_step
+
+            async with self.step_locks[client_id]:
+                current_step = self.client_steps[client_id]
+
+                # Check if simulation has ended
+                if current_step >= len(self._precomputed):
+                    return BarResponse(data=[], error_message="End of backtest simulation reached.")
+
+                # Get the next bar
+                bar_data = self._precomputed[current_step]
+                self.client_steps[client_id] = current_step + 1
+
+                return BarResponse(data=bar_data, error_message=None)
+        except Exception as e:
+            logger.exception(f"Error getting next bar for client {client_id}: {e}")
+            return BarResponse(data=[], error_message=str(e))
     
     def _initialize_simulator(self):
         """Initialize the simulator based on model type"""

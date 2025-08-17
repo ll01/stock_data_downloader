@@ -58,10 +58,11 @@ async def test_reset_single_client():
     assert client_id is not None
 
     await server.reset(initiating_websocket=ws)
-
-    # ensure portfolio cleared and data_source.reset_client was called for the client
-    portfolio.clear_positions.assert_called_once()
+    
+    # ensure data_source.reset_client was called for the client;
+    # do not clear global portfolio on single-client reset
     data_source.reset_client.assert_awaited()
+    portfolio.clear_positions.assert_not_called()
     # check that a reset message was sent to this websocket
     messages = await ws.wait_for_message(timeout=1.0)
     assert messages, "Expected a reset message to be sent"

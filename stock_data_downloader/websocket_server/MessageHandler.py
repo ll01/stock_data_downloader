@@ -1,11 +1,14 @@
 import copy
 import json
+import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Union
 
 from stock_data_downloader.models import TickerData
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 
 from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
@@ -32,7 +35,7 @@ class MessageHandler:
         self,
         raw_data: Union[Dict, str],
         trading_system: TradingSystem,
-        connection_manager: ConnectionManager
+        connection_manager: ConnectionManager,
     ) -> HandleResult:
         # Handle JSON parsing if raw_data is a string
         if isinstance(raw_data, str):
@@ -44,8 +47,8 @@ class MessageHandler:
                     payload={
                         "status": "error",
                         "code": "INVALID_JSON",
-                        "message": "Invalid JSON format received"
-                    }
+                        "message": "Invalid JSON format received",
+                    },
                 )
         else:
             data = raw_data
@@ -54,7 +57,38 @@ class MessageHandler:
         action = data.get("action")
         logging.debug(action)
         if action == "reset":
-            handle_result = HandleResult(result_type=RESET_REQUESTED, payload={})
+            # When reset is requested, we need to actually perform the reset operation
+            try:
+                # Reset the data source (support sync or async implementations)
+                if hasattr(trading_system, 'data_source') and trading_system.data_source:
+                    reset_res = trading_system.data_source.reset()
+                    # Some implementations may return an awaitable/coroutine - await if so
+                    if inspect.isawaitable(reset_res) or asyncio.iscoroutine(reset_res):
+                        await reset_res
+
+                # Reset the portfolio
+                if hasattr(trading_system, 'portfolio') and trading_system.portfolio:
+                    trading_system.portfolio.clear_positions()
+                
+                # Clear the final report sent flag for this client (only if we have a valid client id)
+                websocket = data.get("_ws") if isinstance(data, dict) else None
+                if websocket:
+                    client_id = connection_manager.get_client_id(websocket)
+                    if client_id is not None and hasattr(connection_manager, '_final_report_sent'):
+                        connection_manager._final_report_sent.discard(client_id)
+                
+                logging.info("Server simulation reset completed")
+                handle_result = HandleResult(result_type=RESET_REQUESTED, payload={"message": "Simulation reset completed"})
+            except Exception as e:
+                logging.exception(f"Error during reset: {e}")
+                handle_result = HandleResult(
+                    result_type="error",
+                    payload={
+                        "status": "error",
+                        "code": "RESET_FAILED",
+                        "message": f"Failed to reset simulation: {str(e)}",
+                    },
+                )
 
         elif action == "next_bar":
             # Per-client stepping: accept either a client_id (preferred) or websocket (legacy)
@@ -62,31 +96,82 @@ class MessageHandler:
             websocket = data.get("_ws")
             if not client_id:
                 if websocket is None:
-                    return self._send_rejection(data, reason="Missing websocket context for next_bar")
+                    return self._send_rejection(
+                        data, reason="Missing websocket context for next_bar"
+                    )
                 client_id = connection_manager.get_client_id(websocket)
             if not client_id:
                 return self._send_rejection(data, reason="Unknown client for next_bar")
-            # Accept either 'pull_mode' or legacy 'synchronous_mode' flag on data sources
-            pull_mode = getattr(trading_system.data_source, "pull_mode", False) or getattr(trading_system.data_source, "synchronous_mode", False)
-            if not pull_mode:
-                return self._send_rejection(data, reason="next_bar not supported in push mode")
+    
+            # Per-client stepping: call the interface method and expect a BarResponse.
+            ds = getattr(trading_system, "data_source", None)
+            if ds is None:
+                return self._send_rejection(data, reason="No data source available")
+    
             try:
-                # Prefer client-scoped API if available
-                if hasattr(trading_system.data_source, "get_next_bar_for_client"):
-                    next_batch = await trading_system.data_source.get_next_bar_for_client(client_id)  # type: ignore[attr-defined]
+                maybe = ds.get_next_bar_for_client(client_id)
+                # Support both sync and async implementations
+                if asyncio.iscoroutine(maybe) or hasattr(maybe, "__await__"):
+                    bar_resp = await maybe
                 else:
-                    # Try calling get_next_bar with client_id where supported, otherwise fallback
-                    try:
-                        next_batch = await trading_system.data_source.get_next_bar(client_id)  # type: ignore[attr-defined]
-                    except TypeError:
-                        next_batch = await trading_system.data_source.get_next_bar()
-            except AttributeError:
-                # Final fallback to generic single-cursor API
-                next_batch = await trading_system.data_source.get_next_bar()
-            if not next_batch:
-                return HandleResult(result_type="simulation_end", payload={})
-            return HandleResult(result_type="price_update", payload=next_batch)
+                    bar_resp = maybe
+            except Exception as e:
+                logging.exception(f"Error retrieving next bar for client {client_id}: {e}")
+                return HandleResult(
+                    result_type="simulation_end",
+                    payload={"reason": str(e)},
+                )
+    
+            # Backwards compatibility: some tests/implementations may still return a plain list
+            if isinstance(bar_resp, list):
+                if not bar_resp:
+                    return HandleResult(
+                        result_type="simulation_end",
+                        payload={"reason": "End of backtest simulation reached."},
+                    )
+                return HandleResult(result_type="price_update", payload=bar_resp)
+    
+            # Expect a BarResponse-like object
+            data_list = getattr(bar_resp, "data", None)
+            error_msg = getattr(bar_resp, "error_message", None)
+    
+            if error_msg:
+                return HandleResult(
+                    result_type="simulation_end",
+                    payload={"reason": str(error_msg)},
+                )
+    
+            if not data_list:
+                return HandleResult(
+                    result_type="simulation_end",
+                    payload={"reason": "End of backtest simulation reached."},
+                )
+    
+            return HandleResult(result_type="price_update", payload=data_list)
         elif action in ["final_report", "report"]:
+            # Check if we've already sent a final report for this client
+            websocket = raw_data.get("_ws") if isinstance(raw_data, dict) else None
+            if websocket:
+                client_id = connection_manager.get_client_id(websocket)
+                # Only proceed if we have a concrete client_id (not None)
+                if client_id is not None:
+                    if hasattr(connection_manager, '_final_report_sent'):
+                        if client_id in connection_manager._final_report_sent:
+                            # Already sent final report, don't send again
+                            return HandleResult(
+                                result_type="error",
+                                payload={
+                                    "status": "error",
+                                    "code": "FINAL_REPORT_ALREADY_SENT",
+                                    "message": "Final report already sent for this simulation",
+                                },
+                            )
+                        else:
+                            # Mark that we've sent the final report
+                            connection_manager._final_report_sent.add(client_id)
+                    else:
+                        connection_manager._final_report_sent = {client_id}
+            
             balance_info = await trading_system.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)
             if trading_system.portfolio:
@@ -106,9 +191,7 @@ class MessageHandler:
 
             handle_result = HandleResult(result_type="final_report", payload=payload)
         elif action == "order":
-            handle_result = await self.handle_order(
-                data["data"], trading_system
-            )
+            handle_result = await self.handle_order(data["data"], trading_system)
         elif action == "get_order_status":
             order_id_to_query = data.get("order_id")
             if not order_id_to_query:
@@ -170,7 +253,7 @@ class MessageHandler:
                     },
                 )
             else:
-                logging.warning(f"unrecognized action {action} full message {data}" )
+                logging.warning(f"unrecognized action {action} full message {data}")
         return handle_result
 
     async def handle_order(
@@ -219,18 +302,13 @@ class MessageHandler:
                     result_dict = vars(result)
                     result_dict["portfolio"] = vars(trading_system.portfolio)
                     payload.append(result_dict)
-            return HandleResult(
-                result_type="order_confirmation",
-                payload=payload
-            )
+            return HandleResult(result_type="order_confirmation", payload=payload)
 
         except Exception as e:
             logging.exception("Error placing order with HyperliquidExchange:")
             return self._send_rejection(data, reason=f"Error placing order: {e}")
 
-    async def process_order_update(
-        self, update_data: dict,  portfolio: Portfolio
-    ):
+    async def process_order_update(self, update_data: dict, portfolio: Portfolio):
         logging.debug(f"Received order update: {update_data}")
 
         order = update_data.get("order", {})
@@ -250,7 +328,7 @@ class MessageHandler:
             "timestamp": order.get("statusTimestamp"),
             "cloid": order.get("cloid", ""),
             "exchange_id": order.get("oid", ""),
-            "portfolio": portfolio
+            "portfolio": portfolio,
         }
         return HandleResult(result_type=trade_type, payload=payload)
 
@@ -266,7 +344,7 @@ class MessageHandler:
     ):
         """
         Send trade execution confirmation with unified handling.
-        
+
         This method provides consistent trade execution responses
         regardless of data source type.
         """
@@ -284,7 +362,7 @@ class MessageHandler:
 
     def _send_rejection(self, data: Dict, reason: str, field: str | None = None):
         """Standard rejection format with field-level errors.
-        
+
         This function removes internal-only fields (like the live websocket
         object under the '_ws' key or internal client id under '_client_id')
         before returning the payload so we don't leak non-serializable or

@@ -27,12 +27,19 @@ class DataSourceFactory:
         """
         logger.info(f"Creating data source with type: {config.source_type}")
         source_type = config.source_type
-        backtest_config = config.config
+        data_config = config.config
         if source_type == "backtest":
-            if not isinstance(backtest_config, BacktestDataSourceConfig):
+            # Accept either a BacktestDataSourceConfig object or a plain dict (from YAML/config loader)
+            if isinstance(data_config, dict):
+                try:
+                    backtest_config = BacktestDataSourceConfig(**data_config)
+                except Exception as e:
+                    logger.error(f"Failed to parse backtest config dict: {e}", exc_info=True)
+                    raise
+            elif isinstance(data_config, BacktestDataSourceConfig):
+                backtest_config = data_config
+            else:
                 raise ValueError("Expected BacktestDataSourceConfig for backtest data source")
-                
-            backtest_config = backtest_config
             
             logger.info(f"Creating BacktestDataSource with {backtest_config.backtest_model_type} model")
             logger.info(f"Ticker configs keys: {list(backtest_config.ticker_configs.keys())}")
@@ -43,10 +50,17 @@ class DataSourceFactory:
             )
             
         elif source_type == "hyperliquid":
-            if not isinstance(backtest_config, HyperliquidDataSourceConfig):
+            # Accept either a HyperliquidDataSourceConfig object or a plain dict (from YAML/config loader)
+            if isinstance(data_config, dict):
+                try:
+                    hyperliquid_config = HyperliquidDataSourceConfig(**data_config)
+                except Exception as e:
+                    logger.error(f"Failed to parse hyperliquid config dict: {e}", exc_info=True)
+                    raise
+            elif isinstance(data_config, HyperliquidDataSourceConfig):
+                hyperliquid_config = data_config
+            else:
                 raise ValueError("Expected HyperliquidDataSourceConfig for Hyperliquid data source")
-                
-            hyperliquid_config = backtest_config
             
             logger.info(f"Creating HyperliquidDataSource for {len(hyperliquid_config.tickers)} tickers")
             

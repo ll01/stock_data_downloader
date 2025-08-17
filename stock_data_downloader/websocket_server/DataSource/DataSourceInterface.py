@@ -2,9 +2,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional, Set, AsyncGenerator, Awaitable
+from typing import Any, Dict, List, Optional, Set, Awaitable
 
 from stock_data_downloader.models import TickerData
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 
 class DataSourceInterface(ABC):
     """
@@ -20,6 +21,7 @@ class DataSourceInterface(ABC):
         self._callback: Optional[Callable[[str, Any], Awaitable[None]]] = None
         self.current_prices: Dict[str, float] = {}  # Store latest prices
         self.tickers = tickers
+      
 
     @abstractmethod
     async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> List[TickerData]:
@@ -72,12 +74,23 @@ class DataSourceInterface(ABC):
         pass
 
     @abstractmethod
-    async def get_next_bar(self) -> Optional[List[TickerData]]:
+    async def get_next_bar(self) -> BarResponse:
         """
-        Fetch the next single bar of data for all tickers.
-
+        Fetch the next single bar of data for all tickers (global stepping).
         Returns:
-            Optional[List[TickerData]]: The next bar of data, or None if no more data is available.
+            BarResponse: The next bar of data for global stepping. For per-client
+            stepping use get_next_bar_for_client().
+        """
+        pass
+
+    @abstractmethod
+    async def get_next_bar_for_client(self, client_id: str) -> BarResponse:
+        """
+        Fetch the next bar for a specific client (per-client stepping).
+
+        Implementations MUST return a BarResponse where `data` is a list of TickerData
+        (possibly empty) and `error_message` is either None or a string describing
+        the end-of-simulation or any error. Exceptions should be converted to strings.
         """
         pass
     
@@ -100,6 +113,10 @@ class DataSourceInterface(ABC):
             payload = kind_or_payload
             if isinstance(payload, dict) and payload.get("type"):
                 kind = payload.get("type")
+                if not kind:
+                    raise ValueError("Payload with 'type' must have a non-empty 'type' field")
+                if not isinstance(kind, str):
+                    raise TypeError("Payload 'type' must be a string")
             else:
                 kind = "price_update"
         else:
@@ -128,7 +145,21 @@ class DataSourceInterface(ABC):
                     # Update current_prices if we have ticker & close
                     try:
                         if isinstance(d, dict) and d.get("ticker") is not None and d.get("close") is not None:
-                            self.current_prices[d["ticker"]] = d["close"]
+                            # Ensure ticker is a string
+                            ticker_str = str(d["ticker"])
+                            
+                            # Handle None close values by skipping
+                            if d["close"] is None:
+                                continue
+                                
+                            # Convert close value to float
+                            try:
+                                close_value = float(d["close"])
+                            except (TypeError, ValueError):
+                                # Skip if conversion fails
+                                continue
+                                
+                            self.current_prices[ticker_str] = close_value
                     except Exception:
                         pass
                     normalized.append(d)
@@ -139,22 +170,25 @@ class DataSourceInterface(ABC):
                     for item in payload:
                         if isinstance(item, dict) and "ticker" in item and "close" in item:
                             try:
-                                self.current_prices[item["ticker"]] = item["close"]
+                                # Skip None close values
+                                if item["close"] is None:
+                                    continue
+                                    
+                                # Convert close value to float
+                                close_value = float(item["close"])
+                                
+                                # Ensure ticker is a string
+                                ticker_str = str(item["ticker"])
+                                self.current_prices[ticker_str] = close_value
                             except Exception:
                                 pass
         except Exception:
             logging.exception("Error while normalizing payload for callback")
 
-        # Invoke callback with flexible signature handling
+        # Invoke callback with both arguments (kind and payload)
         if self._callback:
             try:
-                try:
-                    res = self._callback(kind, payload)
-                except TypeError:
-                    # Callback may accept a single argument (payload)
-                    res = self._callback(payload)
-
-                # Await if the callback returned a coroutine / awaitable
+                res = self._callback(kind, payload)
                 if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
                     await res
             except Exception:

@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Awaitable
 import ccxt
 
 from stock_data_downloader.models import CCXTDataSourceConfig, TickerData
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import (
     DataSourceInterface,
 )
@@ -140,3 +141,14 @@ class CCXTDataSource(DataSourceInterface):
         """
         await self.unsubscribe_realtime_data()
         print("CCXT data source has been reset.")
+
+    async def get_next_bar(self) -> BarResponse:
+        # Not applicable for this real-time-only source.
+        return BarResponse(data=[], error_message="This data source does not support get_next_bar.")
+
+    async def get_next_bar_for_client(self, client_id: str) -> BarResponse:
+        """
+        Real-time sources do not support per-client stepping. Return a BarResponse
+        with an explicit error_message (string) so callers can handle it consistently.
+        """
+        return BarResponse(data=[], error_message="This data source does not support per-client next_bar.")

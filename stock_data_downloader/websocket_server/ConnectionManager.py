@@ -73,6 +73,10 @@ class ConnectionManager:
         self.MAX_RETRIES = 10
         self._client_ids: Dict[ServerConnection, str] = {}
         self._sockets_by_client: Dict[str, ServerConnection] = {}
+        # Track which clients have been sent final reports for the current simulation run.
+        # This attribute used to be dynamically attached by the server; make it explicit
+        # on ConnectionManager so static type checkers (Pylance) do not warn.
+        self._final_report_sent: Set[str] = set()
 
     async def add_connection(self, websocket: ServerConnection, enqueue_welcome: bool = True) -> None:
         """
@@ -312,12 +316,12 @@ class ConnectionManager:
         
     def get_connection_stats(self) -> Dict[str, Any]:
         """Get connection statistics"""
-        stats_copy = self.stats.copy()
-        # Convert integer stats to float to avoid type errors
-        for key in stats_copy:
-            if isinstance(stats_copy[key], int):
-                stats_copy[key] = float(stats_copy[key])
-                
+        # Create a new dictionary with float values for all stats
+        stats_copy = {
+            key: float(value) if isinstance(value, int) else value
+            for key, value in self.stats.items()
+        }
+        
         try:
             now = asyncio.get_event_loop().time()
             uptimes = []
@@ -328,7 +332,9 @@ class ConnectionManager:
             uptime_seconds = max(uptimes) if uptimes else 0.0
             stats_copy["uptime_seconds"] = uptime_seconds
             stats_copy["messages_per_second"] = (
-                stats_copy.get("messages_sent", 0) / uptime_seconds if uptime_seconds > 0 else 0.0
+                stats_copy.get("messages_sent", 0.0) / uptime_seconds
+                if uptime_seconds > 0
+                else 0.0
             )
         except Exception:
             stats_copy["uptime_seconds"] = 0.0

@@ -14,7 +14,8 @@ from stock_data_downloader.websocket_server.server import WebSocketServer
 async def test_minimal_websocket_server_lifecycle():
     """Simplified test: just start and shutdown server without client interactions"""
     # Minimal mock trading system
-    dummy_trading_system = MagicMock()
+    dummy_data_source = MagicMock()
+    dummy_simulation_manager = MagicMock()
     
     # Minimal server components
     connection_manager = ConnectionManager()
@@ -22,9 +23,10 @@ async def test_minimal_websocket_server_lifecycle():
     
     # Create and start server
     server = WebSocketServer(
-        trading_system=dummy_trading_system,
+        data_source=dummy_data_source,
         connection_manager=connection_manager,
         message_handler=message_handler,
+        simulation_manager=dummy_simulation_manager,
         uri="ws://localhost:0"
     )
     await server.start()
@@ -79,12 +81,14 @@ async def end_to_end_server():
     # Create server components
     connection_manager = ConnectionManager(max_in_flight_messages=5)
     message_handler = MessageHandler()
+    simulation_manager = MagicMock()
 
     # Use 127.0.0.1 instead of localhost to avoid Windows issues
     server = WebSocketServer(
-        trading_system=mock_trading_system,
+        data_source=mock_trading_system.data_source,
         connection_manager=connection_manager,
         message_handler=message_handler,
+        simulation_manager=simulation_manager,
         uri="ws://127.0.0.1:0"  # OS assigns free port
     )
     
@@ -332,13 +336,16 @@ async def test_end_to_end_exchange_integration_flow(end_to_end_server):
     """Test full flow including exchange integration points"""
     server, port = end_to_end_server
     
-    # Setup mock exchange in trading system
+    # Setup mock exchange in simulation manager
     mock_exchange = MagicMock()
     mock_exchange.place_order = AsyncMock(return_value=[MagicMock(success=True)])
     mock_exchange.get_order_status = AsyncMock(return_value=MagicMock(status="filled"))
     mock_exchange.cancel_order = AsyncMock(return_value=MagicMock(success=True))
     mock_exchange.get_position = AsyncMock(return_value=MagicMock(size=0.001))
-    server.trading_system.exchange = mock_exchange
+    
+    session = MagicMock()
+    session.exchange = mock_exchange
+    server.simulation_manager.get_session.return_value = session
     
     async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
         # Connect and get initial bar

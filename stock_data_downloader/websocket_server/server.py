@@ -3,6 +3,7 @@ import json
 import logging
 import socket
 import inspect
+import multiprocessing
 from unittest.mock import Mock
 from typing import Any, Optional
 from datetime import datetime, timezone
@@ -11,9 +12,11 @@ from stock_data_downloader.models import AppConfig, TickerData
 from stock_data_downloader.websocket_server.factories.DataSourceFactory import (
     DataSourceFactory,
 )
+from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
 from stock_data_downloader.websocket_server.factories.ExchangeFactory import (
     ExchangeFactory,
 )
+from stock_data_downloader.websocket_server.SimulationManager import SimulationManager
 import websockets
 from websockets.asyncio.server import ServerConnection
 
@@ -42,19 +45,21 @@ def find_free_port():
 class WebSocketServer:
     def __init__(
         self,
-        trading_system: TradingSystem,
+        data_source: DataSourceInterface,
         connection_manager: ConnectionManager,
         message_handler: MessageHandler,
+        simulation_manager: SimulationManager,
         uri: str,
         max_in_flight_messages: int = 10,
         realtime: bool = False,
     ):
-        self.trading_system = trading_system
+        self.data_source = data_source
         self.connection_manager = connection_manager
+        self.message_handler = message_handler
+        self.simulation_manager = simulation_manager
         # Initialize the final report sent tracking
         if not hasattr(self.connection_manager, '_final_report_sent'):
             self.connection_manager._final_report_sent = set()
-        self.message_handler = message_handler
         self.uri = uri
         # Per-client coordination for backtests
         self._client_ready: dict[str, asyncio.Event] = {}
@@ -161,7 +166,7 @@ class WebSocketServer:
                             # perform the simple "get next bar" flow here so tests that patch
                             # MessageHandler still exercise the data source calls.
                             action = request_with_ws.get("action")
-                            ds = getattr(self.trading_system, "data_source", None)
+                            ds = self.data_source
                             # If we've already sent a simulation_end to this client, ignore further pull requests
                             client_id = self.connection_manager.get_client_id(websocket)
                             if action in ("next_bar", "next_tick") and self.connection_manager.connection_info.get(websocket, {}).get("simulation_end_sent"):
@@ -214,10 +219,17 @@ class WebSocketServer:
                             # Fallback to using the configured MessageHandler (sync or async)
                             # Support both sync and async message handlers (tests may pass MagicMock)
                             # Handle message processing with proper type handling
+                            session = self.simulation_manager.get_session(client_id)
+                            if not session:
+                                logger.error(f"Could not find session for client {client_id}. Closing connection.")
+                                await websocket.close(code=1011, reason="Session not found")
+                                break
+
                             handler_response = await self._maybe_await(
                                 self.message_handler.handle_message(
                                     request_with_ws,
-                                    self.trading_system,
+                                    session,
+                                    self.data_source,
                                     self.connection_manager
                                 )
                             )
@@ -319,13 +331,14 @@ class WebSocketServer:
         try:
             # assign client id and init per-client state
             client_id = self.connection_manager.assign_client_id(websocket)
+            self.simulation_manager.create_session(client_id)
             self._client_ready[client_id] = asyncio.Event()
             self._client_ready[client_id].set()  # first bar ready
             self._client_locks[client_id] = asyncio.Lock()
             mode = "push"
 
             # Determine pull_mode via data_source attributes (duck-typed)
-            ds = getattr(self.trading_system, "data_source", None)
+            ds = self.data_source
             pull_mode = getattr(ds, "pull_mode", False) or getattr(ds, "synchronous_mode", False)
             if pull_mode:
                 mode = "pull"
@@ -439,6 +452,9 @@ class WebSocketServer:
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
         finally:
+            client_id = self.connection_manager.get_client_id(websocket)
+            if client_id:
+                self.simulation_manager.destroy_session(client_id)
             try:
                 await self._maybe_await(websocket.close())
             except Exception:
@@ -459,7 +475,7 @@ class WebSocketServer:
                 return
             await self._maybe_await(self.connection_manager.send(websocket, kind, payload))
 
-        ds = getattr(self.trading_system, "data_source", None)
+        ds = self.data_source
 
         # Determine whether we should subscribe automatically.
         pull_mode = getattr(ds, "pull_mode", False) or getattr(ds, "synchronous_mode", False)
@@ -477,7 +493,9 @@ class WebSocketServer:
                 await self._maybe_await(maybe_enable)
 
         # Subscribe to order updates if the exchange supports it (sync or async)
-        exchange = getattr(self.trading_system, "exchange", None)
+        # exchange = getattr(self.trading_system, "exchange", None)
+        # For now, we don't have access to exchange in the new architecture
+        exchange = None
         subscribe_orders = getattr(exchange, "subscribe_to_orders", None)
         if subscribe_orders and callable(subscribe_orders):
             maybe_orders = subscribe_orders([], forward)
@@ -523,15 +541,15 @@ class WebSocketServer:
             # portfolios are introduced in the future, replace this with per-client logic.
             try:
                 # call client-specific reset if available (sync or async)
-                reset_fn = getattr(self.trading_system.data_source, "reset_client", None)
+                reset_fn = getattr(self.data_source, "reset_client", None)
                 if reset_fn and callable(reset_fn):
                     await self._maybe_await(reset_fn(client_id))
                 else:
                     # Fallback: reset entire data source if no client-specific reset exists
-                    await self._maybe_await(self.trading_system.data_source.reset())
+                    await self._maybe_await(self.data_source.reset())
             except AttributeError:
                 # fallback to full reset if attribute access fails
-                await self._maybe_await(self.trading_system.data_source.reset())
+                await self._maybe_await(self.data_source.reset())
             
             # Clear the final report sent flag for this client
             if hasattr(self.connection_manager, '_final_report_sent'):
@@ -546,7 +564,7 @@ class WebSocketServer:
             await self._maybe_await(self.connection_manager.send(initiating_websocket, "reset", {"message": "Client simulation has been reset."}))
 
             # After resetting the data source, attempt to send fresh historical data to the initiating client
-            ds = getattr(self.trading_system, "data_source", None)
+            ds = self.data_source
             if ds is not None and not isinstance(ds, Mock):
                 historical = await _fetch_historical(ds)
                 if historical:
@@ -578,8 +596,9 @@ class WebSocketServer:
             return
 
         logger.info("Resetting all clients")
-        self.trading_system.portfolio.clear_positions()
-        await self._maybe_await(self.trading_system.data_source.reset())
+        for session in self.simulation_manager._sessions.values():
+            session.portfolio.clear_positions()
+        await self._maybe_await(self.data_source.reset())
         
         # Clear all final report sent flags
         if hasattr(self.connection_manager, '_final_report_sent'):
@@ -594,7 +613,7 @@ class WebSocketServer:
         await self._maybe_await(self.connection_manager.broadcast_to_all("reset", {"message": "Simulation has been reset."}))
 
         # After global reset, fetch fresh historical and broadcast to all clients
-        ds = getattr(self.trading_system, "data_source", None)
+        ds = self.data_source
         if ds is not None and not isinstance(ds, Mock):
             historical = await _fetch_historical(ds)
             if historical:
@@ -628,32 +647,25 @@ class WebSocketServer:
 
 
 
-async def start_server(app_config: AppConfig, websocket_uri: str | None = None, stop_event: asyncio.Event | None = None):
+async def start_server(app_config: AppConfig, websocket_uri: str | None = None, stop_flag: Optional[multiprocessing.Value] = None):
     """Boot the WebSocket server from a single AppConfig using the existing factories."""
     # Use 127.0.0.1 instead of localhost to avoid Windows issues
     uri = websocket_uri or f"ws://127.0.0.1:{find_free_port()}"
 
-    # 1.  Data-source & exchange from factories
+    # 1.  Data-source from factory
     data_source = DataSourceFactory.create_data_source(app_config.data_source)
-    portfolio = Portfolio(initial_cash=app_config.initial_cash)
-    exchange = ExchangeFactory.create_exchange(app_config.exchange, portfolio)
 
-    # 2.  Trading system
-    trading_system = TradingSystem(
-        exchange=exchange,
-        portfolio= portfolio,
-        data_source=data_source,
-    )
+    # 2.  Simulation Manager
+    simulation_manager = SimulationManager(app_config)
 
     # 3.  WebSocket server
     connection_manager = ConnectionManager()
-    # attach connection manager onto trading_system for handler context
-    setattr(trading_system, "connection_manager", connection_manager)
     message_handler = MessageHandler()
     server = WebSocketServer(
-        trading_system=trading_system,
+        data_source=data_source,
         connection_manager=connection_manager,
         message_handler=message_handler,
+        simulation_manager=simulation_manager,
         uri=uri,
     )
 
@@ -662,22 +674,13 @@ async def start_server(app_config: AppConfig, websocket_uri: str | None = None, 
     logger.info(f"WebSocket server ready on ws://127.0.0.1:{server.get_port()}")
 
     try:
-        # Auto-create a stop_event in test/pytest mode to ensure clean shutdown
-        if stop_event is None:
-            import os
-            if "PYTEST_CURRENT_TEST" in os.environ:
-                stop_event = asyncio.Event()
-                # Schedule stop_event to fire after pytest-timeout/short delay
-                async def auto_stop():
-                    await asyncio.sleep(0.1)
-                    stop_event.set()
-                asyncio.create_task(auto_stop())
-        if stop_event is None:
+        if stop_flag is None:
             # Wait indefinitely but allow cancellation
             while True:
                 await asyncio.sleep(3600)
         else:
-            await stop_event.wait()
+            while not stop_flag.value:
+                await asyncio.sleep(0.1)
     finally:
         await server.shutdown()
 

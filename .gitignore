@@ -182,3 +182,4 @@ pyrightconfig.json
 *.cache
 *.secret
 *.sqlite
+stock_data_downloader/example/hyperliquid_exchange_manual_test.py

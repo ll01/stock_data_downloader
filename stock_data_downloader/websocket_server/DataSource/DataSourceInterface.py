@@ -45,12 +45,25 @@ class DataSourceInterface(ABC):
         This method should establish the necessary connections to receive real-time
         market data and invoke the callback function whenever new data is available.
         
-        The callback function should accept a single parameter containing the market data.
+        The callback function should accept two parameters:
+        - kind: str - The type of update (typically "price_update" for market data)
+        - payload: List[Dict[str, Any]] - The market data as a list of dictionaries
+        
+        For price updates, each dictionary in the payload list contains:
+        - ticker: str - The ticker symbol
+        - timestamp: str - ISO format timestamp
+        - open: float - Opening price
+        - high: float - Highest price
+        - low: float - Lowest price
+        - close: float - Closing price
+        - volume: float - Trading volume
+        
         For backtest sources that complete their simulation, a special message with
         {"type": "simulation_end"} should be sent through the callback.
         
         Args:
             callback: Async function to call when new data is available.
+                     Signature: callback(kind: str, payload: List[Dict[str, Any]])
         """
         pass
 

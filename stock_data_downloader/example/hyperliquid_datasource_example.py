@@ -1,43 +1,63 @@
 import asyncio
 import threading
-from typing import Any
+from typing import Any, List
 
 from stock_data_downloader.websocket_server.DataSource.HyperliquidDataSource import HyperliquidDataSource
+from stock_data_downloader.models import HyperliquidDataSourceConfig
+
+
+async def data_callback(kind: str, payload: List[dict[str, Any]]):
+    """Callback for real-time data updates.
+    
+    Args:
+        kind: The type of update (typically "price_update" for market data)
+        payload: List of market data dictionaries, each containing:
+            - ticker: str - The ticker symbol
+            - timestamp: str - ISO format timestamp
+            - open: float - Opening price
+            - high: float - Highest price
+            - low: float - Lowest price
+            - close: float - Closing price
+            - volume: float - Trading volume
+    """
+    if kind == "price_update":
+        for data in payload:
+            print(f"Price update: {data['ticker']} - {data['close']} at {data['timestamp']}")
 
 
 async def main():
-    # Define tickers (Hyperliquid uses perpetual contract symbols like 'BTC/USD:USD')
-    tickers = ['BTC', 'ETH']
-
-    # Initialize CCXTDataSource for Hyperliquid
-    data_source = HyperliquidDataSource(
-        # exchange_id='hyperliquid',  # Ensure CCXT supports this exchange ID
-        config={
-            'api_key': 'key',
-            'api_secret': 'secret',
-        },
-        tickers=tickers,
-        interval='1m',  # OHLCV interval
-        network="mainnet"
+    # Define configuration
+    config = HyperliquidDataSourceConfig(
+        source_type="hyperliquid",
+        network="testnet",
+        tickers=['BTC', 'ETH'],
+        interval='1m',
+        api_config={}
     )
-    # markets = data_source._exchange.load_markets()
-    # print(f"market format {markets[0]}")
 
-    # Define a callback for real-time updates
-    def callback( payload: Any):
-        print(f"Received update: {payload}")
+    # Initialize HyperliquidDataSource
+    data_source = HyperliquidDataSource(
+        config=config.api_config,
+        network=config.network,
+        tickers=config.tickers,
+        interval=config.interval
+    )
 
     # Subscribe to real-time data
-    await data_source.subscribe_realtime_data(callback)
+    print("Subscribing to real-time data...")
+    await data_source.subscribe_realtime_data(data_callback)
 
-    # Run for 60 seconds to receive updates
-    await asyncio.sleep(10)
+    # Run for 30 seconds to receive updates
+    print("Receiving data for 30 seconds...")
+    await asyncio.sleep(30)
 
     # Clean up
+    print("Unsubscribing from real-time data...")
     await data_source.unsubscribe_realtime_data()
     print("Threads still alive:", threading.enumerate())
-    print("shutting down ...")
-    # os._exit(0) 
+    print("Shutting down...")
+
 
 # Run the async main function
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

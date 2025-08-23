@@ -13,6 +13,8 @@ from stock_data_downloader.websocket_server.DataSource.BarResponse import BarRes
 from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 from stock_data_downloader.websocket_server.portfolio import Portfolio
+from stock_data_downloader.websocket_server.DataSource.DataSourceInterface import DataSourceInterface
+from stock_data_downloader.websocket_server.SimulationSession import SimulationSession
 from stock_data_downloader.websocket_server.trading_system import TradingSystem
 
 RESET_REQUESTED = "reset"
@@ -34,7 +36,8 @@ class MessageHandler:
     async def handle_message(
         self,
         raw_data: Union[Dict, str],
-        trading_system: TradingSystem,
+        session: SimulationSession,
+        data_source: DataSourceInterface,
         connection_manager: ConnectionManager,
     ) -> HandleResult:
         # Handle JSON parsing if raw_data is a string
@@ -60,15 +63,15 @@ class MessageHandler:
             # When reset is requested, we need to actually perform the reset operation
             try:
                 # Reset the data source (support sync or async implementations)
-                if hasattr(trading_system, 'data_source') and trading_system.data_source:
-                    reset_res = trading_system.data_source.reset()
+                if data_source:
+                    reset_res = data_source.reset()
                     # Some implementations may return an awaitable/coroutine - await if so
                     if inspect.isawaitable(reset_res) or asyncio.iscoroutine(reset_res):
                         await reset_res
 
                 # Reset the portfolio
-                if hasattr(trading_system, 'portfolio') and trading_system.portfolio:
-                    trading_system.portfolio.clear_positions()
+                if session.portfolio:
+                    session.portfolio.clear_positions()
                 
                 # Clear the final report sent flag for this client (only if we have a valid client id)
                 websocket = data.get("_ws") if isinstance(data, dict) else None
@@ -104,7 +107,7 @@ class MessageHandler:
                 return self._send_rejection(data, reason="Unknown client for next_bar")
     
             # Per-client stepping: call the interface method and expect a BarResponse.
-            ds = getattr(trading_system, "data_source", None)
+            ds = data_source
             if ds is None:
                 return self._send_rejection(data, reason="No data source available")
     
@@ -172,12 +175,12 @@ class MessageHandler:
                     else:
                         connection_manager._final_report_sent = {client_id}
             
-            balance_info = await trading_system.exchange.get_balance()
+            balance_info = await session.exchange.get_balance()
             final_value = balance_info.get("total_balance", 0)
-            if trading_system.portfolio:
-                final_value = trading_system.portfolio.cash
-                total_return = trading_system.portfolio.calculate_total_return()
-                final_portfolio_state = vars(trading_system.portfolio)
+            if session.portfolio:
+                final_value = session.portfolio.cash
+                total_return = session.portfolio.calculate_total_return()
+                final_portfolio_state = vars(session.portfolio)
                 payload = {
                     "final_value": final_value,
                     "total_return": total_return,
@@ -191,7 +194,7 @@ class MessageHandler:
 
             handle_result = HandleResult(result_type="final_report", payload=payload)
         elif action == "order":
-            handle_result = await self.handle_order(data["data"], trading_system)
+            handle_result = await self.handle_order(data["data"], session)
         elif action == "get_order_status":
             order_id_to_query = data.get("order_id")
             if not order_id_to_query:
@@ -200,7 +203,7 @@ class MessageHandler:
                 )
 
             try:
-                order_status_result = await trading_system.exchange.get_order_status(
+                order_status_result = await session.exchange.get_order_status(
                     str(order_id_to_query)
                 )
                 handle_result = HandleResult(
@@ -227,7 +230,7 @@ class MessageHandler:
                     data, reason="Missing order_id for cancellation."
                 )
             try:
-                success = await trading_system.exchange.cancel_order(order_id_to_cancel)
+                success = await session.exchange.cancel_order(order_id_to_cancel)
                 if success:
                     handle_result = HandleResult(
                         result_type="order_cancellation",
@@ -257,7 +260,7 @@ class MessageHandler:
         return handle_result
 
     async def handle_order(
-        self, data: Dict, trading_system: TradingSystem
+        self, data: Dict, session: SimulationSession
     ) -> HandleResult:
         """Handles incoming messages for placing trade orders."""
         ticker = data.get("ticker", "")
@@ -292,15 +295,15 @@ class MessageHandler:
         ]
 
         try:
-            order_placement_result = await trading_system.exchange.place_order(
+            order_placement_result = await session.exchange.place_order(
                 orders_to_place
             )
             payload = []
             for result in order_placement_result:
                 if result.success:
-                    trading_system.portfolio.apply_order_result(result)
+                    session.portfolio.apply_order_result(result)
                     result_dict = vars(result)
-                    result_dict["portfolio"] = vars(trading_system.portfolio)
+                    result_dict["portfolio"] = vars(session.portfolio)
                     payload.append(result_dict)
             return HandleResult(result_type="order_confirmation", payload=payload)
 

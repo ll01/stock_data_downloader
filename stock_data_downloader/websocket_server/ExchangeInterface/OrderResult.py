@@ -13,3 +13,4 @@ class OrderResult:
     success: bool
     timestamp: str
     message: Optional[str] = None
+    fee_paid: float = 0.0

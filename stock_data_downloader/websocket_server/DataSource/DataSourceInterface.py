@@ -2,9 +2,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional, Set, AsyncGenerator, Awaitable
+from typing import Any, Dict, List, Optional, Set, Awaitable
 
 from stock_data_downloader.models import TickerData
+from stock_data_downloader.websocket_server.DataSource.BarResponse import BarResponse
 
 class DataSourceInterface(ABC):
     """
@@ -20,6 +21,7 @@ class DataSourceInterface(ABC):
         self._callback: Optional[Callable[[str, Any], Awaitable[None]]] = None
         self.current_prices: Dict[str, float] = {}  # Store latest prices
         self.tickers = tickers
+      
 
     @abstractmethod
     async def get_historical_data(self, tickers: List[str] = [], interval: str = "") -> List[TickerData]:
@@ -43,12 +45,25 @@ class DataSourceInterface(ABC):
         This method should establish the necessary connections to receive real-time
         market data and invoke the callback function whenever new data is available.
         
-        The callback function should accept a single parameter containing the market data.
+        The callback function should accept two parameters:
+        - kind: str - The type of update (typically "price_update" for market data)
+        - payload: List[Dict[str, Any]] - The market data as a list of dictionaries
+        
+        For price updates, each dictionary in the payload list contains:
+        - ticker: str - The ticker symbol
+        - timestamp: str - ISO format timestamp
+        - open: float - Opening price
+        - high: float - Highest price
+        - low: float - Lowest price
+        - close: float - Closing price
+        - volume: float - Trading volume
+        
         For backtest sources that complete their simulation, a special message with
         {"type": "simulation_end"} should be sent through the callback.
         
         Args:
             callback: Async function to call when new data is available.
+                     Signature: callback(kind: str, payload: List[Dict[str, Any]])
         """
         pass
 
@@ -72,23 +87,129 @@ class DataSourceInterface(ABC):
         pass
 
     @abstractmethod
-    async def get_next_bar(self) -> Optional[List[TickerData]]:
+    async def get_next_bar(self) -> BarResponse:
         """
-        Fetch the next single bar of data for all tickers.
-
+        Fetch the next single bar of data for all tickers (global stepping).
         Returns:
-            Optional[List[TickerData]]: The next bar of data, or None if no more data is available.
+            BarResponse: The next bar of data for global stepping. For per-client
+            stepping use get_next_bar_for_client().
+        """
+        pass
+
+    @abstractmethod
+    async def get_next_bar_for_client(self, client_id: str) -> BarResponse:
+        """
+        Fetch the next bar for a specific client (per-client stepping).
+
+        Implementations MUST return a BarResponse where `data` is a list of TickerData
+        (possibly empty) and `error_message` is either None or a string describing
+        the end-of-simulation or any error. Exceptions should be converted to strings.
         """
         pass
     
-    async def _notify_callback(self, kind: str, payload: Any):
+    async def _notify_callback(self, kind_or_payload: Any, payload: Optional[Any] = None):
+        """
+        Notify the subscribed callback.
+
+        Supports both calling conventions used in tests and older code:
+          - _notify_callback(kind, payload)
+          - _notify_callback(payload)  (kind is inferred as "price_update" or taken from payload["type"])
+
+        This method will:
+          - Normalize TickerData models to plain dicts before invoking the callback.
+          - Update self.current_prices using the normalized payload.
+          - Attempt to call the callback with (kind, payload) and fall back to (payload,) if necessary.
+          - Support both async and sync callbacks.
+        """
+        if payload is None:
+            if isinstance(kind_or_payload, dict) and kind_or_payload.get("type"):
+                payload = kind_or_payload
+                kind = kind_or_payload.get("type")
+                if not kind:
+                    raise ValueError("Payload with 'type' must have a non-empty 'type' field")
+                if not isinstance(kind, str):
+                    raise TypeError("Payload 'type' must be a string")
+            elif isinstance(kind_or_payload, dict):
+                payload = kind_or_payload
+                kind = "price_update"
+            elif isinstance(kind_or_payload, str):
+                kind = kind_or_payload
+                payload = None
+            else:
+                kind = "price_update"
+                payload = kind_or_payload
+        else:
+            kind = kind_or_payload
+
+        # Normalize payloads for price updates to a list of dicts and update current_prices
+        try:
+            if kind == "price_update" and payload is not None:
+                normalized = []
+                for tick in payload:
+                    # Convert Pydantic model instances to dicts if necessary
+                    if hasattr(tick, "model_dump"):
+                        d = tick.model_dump()
+                    elif isinstance(tick, dict):
+                        d = tick
+                    else:
+                        # Best-effort conversion from objects with attributes
+                        try:
+                            d = {
+                                "ticker": getattr(tick, "ticker", None),
+                                "close": getattr(tick, "close", None),
+                                "timestamp": getattr(tick, "timestamp", None),
+                            }
+                        except Exception:
+                            d = tick
+                    # Update current_prices if we have ticker & close
+                    try:
+                        if isinstance(d, dict) and d.get("ticker") is not None and d.get("close") is not None:
+                            # Ensure ticker is a string
+                            ticker_str = str(d["ticker"])
+                            
+                            # Handle None close values by skipping
+                            if d["close"] is None:
+                                continue
+                                
+                            # Convert close value to float
+                            try:
+                                close_value = float(d["close"])
+                            except (TypeError, ValueError):
+                                # Skip if conversion fails
+                                continue
+                                
+                            self.current_prices[ticker_str] = close_value
+                    except Exception:
+                        pass
+                    normalized.append(d)
+                payload = normalized
+            else:
+                # For other message types, if payload contains price-like dicts, update current_prices
+                if isinstance(payload, list):
+                    for item in payload:
+                        if isinstance(item, dict) and "ticker" in item and "close" in item:
+                            try:
+                                # Skip None close values
+                                if item["close"] is None:
+                                    continue
+                                    
+                                # Convert close value to float
+                                close_value = float(item["close"])
+                                
+                                # Ensure ticker is a string
+                                ticker_str = str(item["ticker"])
+                                self.current_prices[ticker_str] = close_value
+                            except Exception:
+                                pass
+        except Exception:
+            logging.exception("Error while normalizing payload for callback")
+
+        # Invoke callback with both arguments (kind and payload)
         if self._callback:
             try:
-                if kind == "price_update":
-                    # keep current_prices up-to-date
-                    for tick in payload:
-                        self.current_prices[tick.ticker] = tick.close
-                await self._callback(kind, payload)
+                res = self._callback(kind, payload)
+                if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                    await res
             except Exception:
                 logging.exception("Error in data source callback")
         else:

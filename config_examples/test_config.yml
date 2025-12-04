@@ -1,15 +1,18 @@
 # Example configuration for backtest data source
 exchange:
   type: test
+  maker_fee_bps: 0.0  # 0.00% (1 bps = 0.01%)
+  taker_fee_bps: 5.0  # 0.05% (1 bps = 0.01%)
+  slippage_bps: 0.0   # 0.00% (1 bps = 0.01%)
 data_source:
   source_type: backtest
-  backtest_mode: synchronous
+  backtest_mode: pull
   backtest_model_type: heston
   start_prices:
     GOOG: 2800.0
     MSFT: 300.0
     AAPL: 150.0
-  timesteps: 3  # One year of daily data
+  timesteps: 252  # One year of daily data
   interval: 0.00396825  # 1/252 (daily)
   seed: 42
   ticker_configs:

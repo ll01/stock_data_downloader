@@ -137,19 +137,34 @@ class HyperliquidExchange(ExchangeInterface):
                 raw = self._exchange.market_open(
                     order.symbol, is_buy, quantity, None, cloid=cloid_obj
                 )
+                logging.debug(f"Raw response from market_open: {raw}")
+                
                 # bulk_orders returns a dict with statuses under response.data.statuses[0]
-                status_entry = raw["response"]["data"]["statuses"][0]
+                try:
+                    status_entry = raw["response"]["data"]["statuses"][0]
+                    logging.debug(f"Status entry: {status_entry}")
+                except (KeyError, IndexError, TypeError) as e:
+                    logging.error(f"Error accessing status entry: {e}")
+                    logging.error(f"Raw response structure: {raw}")
+                    raise
 
                 # Only map & save if this particular order succeeded
                 id_data = status_entry.get("filled") or status_entry.get("resting")
                 if raw.get("status") == "ok" and id_data:
-                    interface_id = order.cloid or str(status_entry["oid"])
-                    self._order_mapping[interface_id] = {
-                        "oid": id_data.get("oid"),
-                        "cloid": id_data.get("cloid"),
-                        "ticker": order.symbol,
-                    }
-                    self._save_mapping()
+                    # Try to get the interface_id from cloid first, then oid
+                    interface_id = order.cloid if order.cloid else None
+                    if not interface_id and "oid" in status_entry:
+                        interface_id = str(status_entry["oid"])
+                    
+                    # Only store in mapping if we have a valid interface_id
+                    if interface_id:
+                        cloid_raw = id_data.get("cloid")
+                        self._order_mapping[interface_id] = {
+                            "oid": id_data.get("oid"),
+                            "cloid": Cloid(cloid_raw) if cloid_raw else None,
+                            "ticker": order.symbol,
+                        }
+                        self._save_mapping()
 
                 # Normalize into your dataclass
                 output.append(self.place_order_standardized(raw, cloid_obj))
@@ -201,15 +216,72 @@ class HyperliquidExchange(ExchangeInterface):
         Optionally queries latest status if configured.
         """
         success = raw.get("status") == "ok"
-        status_data = raw["response"]["data"]["statuses"][0]
+        try:
+            status_data = raw["response"]["data"]["statuses"][0]
+        except (KeyError, IndexError, TypeError) as e:
+            return OrderResult(
+                cloid=cloid.to_raw() if cloid else "",
+                oid="",
+                status="error",
+                price=0.0,
+                quantity=0.0,
+                symbol="unknown",
+                side="unknown",
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                message=f"Invalid response structure: {e}",
+            )
 
         # Determine which status key is present: e.g., 'resting', 'filled'
-        key = next(iter(status_data))
-        details = status_data[key]
+        try:
+            key = next(iter(status_data))
+            details = status_data[key]
+        except (StopIteration, KeyError, TypeError) as e:
+            return OrderResult(
+                cloid=cloid.to_raw() if cloid else "",
+                oid="",
+                status="error",
+                price=0.0,
+                quantity=0.0,
+                symbol="unknown",
+                side="unknown",
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                message=f"Invalid status data structure: {e}",
+            )
 
-        oid: int = details["oid"]
-        qty = float(details.get("totalSz", details.get("sz", 0)))
-        avg_px = float(details.get("avgPx", details.get("limitPx", 0)))
+        # Ensure details is a dict
+        if not isinstance(details, dict):
+            return OrderResult(
+                cloid=cloid.to_raw() if cloid else "",
+                oid="",
+                status="error",
+                price=0.0,
+                quantity=0.0,
+                symbol="unknown",
+                side="unknown",
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                message=f"Order details is not a dict: {type(details)}",
+            )
+
+        try:
+            oid: int = details["oid"]
+            qty = float(details.get("totalSz", details.get("sz", 0)))
+            avg_px = float(details.get("avgPx", details.get("limitPx", 0)))
+        except (KeyError, ValueError, TypeError) as e:
+            return OrderResult(
+                cloid=cloid.to_raw() if cloid else "",
+                oid="",
+                status="error",
+                price=0.0,
+                quantity=0.0,
+                symbol="unknown",
+                side="unknown",
+                success=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                message=f"Error extracting order details: {e}",
+            )
 
         # Fallback values in case fetch_status_after_order is False or fails
         symbol = details.get("coin", "unknown")
@@ -366,6 +438,27 @@ class HyperliquidExchange(ExchangeInterface):
         self._ws.start()
         subscription: OrderUpdatesSubscription = {
             "type": "orderUpdates",
+            "user": self.account.address,
+        }
+        sub_id = self._ws.subscribe(subscription, callback=_hl_callback)
+        self._subscriptions.append((subscription, sub_id))
+
+    async def subscribe_to_user_events(self, callback: Callable[[str, Any], Awaitable[None]]):
+        """
+        Subscribe to user-specific events (fills, account updates).
+        """
+        def _hl_callback(raw: Dict[str, Any]) -> None:
+            # Wrap and push
+            awaitable = callback("user_update", raw)
+            asyncio.ensure_future(awaitable)
+
+        # Ensure WS is running
+        if not hasattr(self, "_ws") or not self._ws.is_alive():
+             self._ws = WebsocketManager(self.base_url)
+             self._ws.start()
+
+        subscription = {
+            "type": "webData2",
             "user": self.account.address,
         }
         sub_id = self._ws.subscribe(subscription, callback=_hl_callback)

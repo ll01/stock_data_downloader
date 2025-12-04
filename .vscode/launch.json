@@ -48,6 +48,14 @@
             "module": "stock_data_downloader.run_server",
             "console": "integratedTerminal",
             "args": ["--config", "config_examples/test_config.yml", "--log-level", "DEBUG"]
+        },
+          {
+            "name": "server parent backtest config",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "stock_data_downloader.run_server",
+            "console": "integratedTerminal",
+            "args": ["--config", "../backtest_config.yml", "--log-level", "DEBUG"]
         }
 
     ]

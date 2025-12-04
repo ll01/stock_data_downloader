@@ -7,8 +7,9 @@ import random
 from typing import AsyncGenerator, Dict, List, Optional, Any, cast
 import numpy as np
 import asyncio
-from stock_data_downloader.models import GBMConfig, HestonConfig, TickerConfig, TickerData
+from stock_data_downloader.models import GBMConfig, HestonConfig, GHARCHConfig, TickerConfig, TickerData
 from typing import Protocol
+from copy import deepcopy
 
 def _calculate_gbm_step(
     mean: float, sd: float, rng: random.Random, last_price: float, interval: float
@@ -17,6 +18,38 @@ def _calculate_gbm_step(
     return last_price * exp(
         (mean - 0.5 * sd**2) * interval + rng.gauss(0, 1) * sd * sqrt(interval)
     )
+
+
+def generate_initial_prices(stats: Dict[str, TickerConfig]) -> Dict[str, float]:
+    """
+    Generate initial prices based on model configurations.
+    For each ticker, if start_price is specified in the config, use that.
+    Otherwise, generate a reasonable start price based on the model parameters.
+    """
+    initial_prices = {}
+
+    for ticker, config in stats.items():
+        # If start_price is explicitly set in config, use it
+        if config.start_price is not None:
+            initial_prices[ticker] = config.start_price
+        # Otherwise, generate based on the specific model
+        elif config.gbm is not None:
+            # For GBM, use a base price of 100.0 or calculate based on mean/sd
+            # Using a default of 100.0 for simplicity
+            initial_prices[ticker] = 100.0
+        elif config.heston is not None:
+            # For Heston, use a base price of 100.0 or calculate based on theta
+            # Using a default of 100.0 for simplicity
+            initial_prices[ticker] = 100.0
+        elif config.gharch is not None:
+            # For GHARCH, use a base price of 100.0
+            # Using a default of 100.0 for simplicity
+            initial_prices[ticker] = 100.0
+        else:
+            # If no model configuration is specified, use default price of 100.0
+            initial_prices[ticker] = 100.0
+
+    return initial_prices
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +82,22 @@ class HestonSimulator(ISimulator):
     def __init__(
         self,
         stats: Dict[str, TickerConfig],
-        start_prices: Dict[str, float],
-        dt: float,
+        start_prices: Optional[Dict[str, float]] = None,
+        dt: float = 1.0,
         seed: Optional[int] = None,
     ):
-        if seed is not None:
-            np.random.seed(seed)
+        # Ensure deterministic behaviour regardless of NumPy global RNG state
+        self._rng = np.random.default_rng(seed)
 
-       
+        # If start_prices is not provided, generate initial prices based on model configurations
+        if start_prices is None:
+            self.start_prices = generate_initial_prices(stats)
+        else:
+            self.start_prices = start_prices.copy()
+
         self.dt = dt
         self.start_time = datetime.now(timezone.utc)
-        
+
         strict_stats: Dict[str, StrictHestonTickerConfig] = {}
         invalid_henson_stats  = []
         for ticker, cfg in stats.items():
@@ -69,9 +107,9 @@ class HestonSimulator(ISimulator):
                 strict_stats[ticker] = StrictHestonTickerConfig(heston=cfg.heston)
         if invalid_henson_stats:
             logger.warning(f"{len(invalid_henson_stats)} tickers dont have henson stats")
-        self.start_prices = start_prices
+        self.start_prices = self.start_prices  # Use generated or provided start prices
         self.stats = strict_stats  # now .heston is never None
-        self.current_prices = start_prices.copy()
+        self.current_prices = deepcopy(self.start_prices)
         self.current_variances = {
             t: cfg.heston.theta for t, cfg in self.stats.items()
         }
@@ -97,7 +135,7 @@ class HestonSimulator(ISimulator):
             )
 
             corr = np.array([[1, rho], [rho, 1]])
-            z = np.random.normal(size=2) @ np.linalg.cholesky(corr).T
+            z = self._rng.normal(size=2) @ np.linalg.cholesky(corr).T
             price_shock, var_shock = z[0], z[1]
 
             last_v = max(self.current_variances[ticker], 0)
@@ -111,8 +149,8 @@ class HestonSimulator(ISimulator):
             self.current_prices[ticker] = new_p
 
             open_p = last_p
-            high_p = max(open_p, new_p) + np.random.uniform(0, 0.01) * new_p
-            low_p = min(open_p, new_p) - np.random.uniform(0, 0.01) * new_p
+            high_p = max(open_p, new_p) + self._rng.uniform(0, 0.01) * new_p
+            low_p = min(open_p, new_p) - self._rng.uniform(0, 0.01) * new_p
             
             bars.append(
                 TickerData(
@@ -132,7 +170,7 @@ class HestonSimulator(ISimulator):
     
     def reset(self) -> None:
         self.step_idx = 0
-        self.current_prices = self.start_prices.copy()
+        self.current_prices = deepcopy(self.start_prices)
 
 
 @dataclass
@@ -148,12 +186,18 @@ class GBMSimulator(ISimulator):
     def __init__(
         self,
         stats: Dict[str, TickerConfig],
-        start_prices: Dict[str, float],
-        dt: float,
+        start_prices: Optional[Dict[str, float]] = None,
+        dt: float = 1.0,
         seed: int | None = None,
     ):
-        if seed is not None:
-            np.random.seed(seed)
+        # per-instance RNG for determinism
+        self._rng = np.random.default_rng(seed)
+
+        # If start_prices is not provided, generate initial prices based on model configurations
+        if start_prices is None:
+            self.start_prices = generate_initial_prices(stats)
+        else:
+            self.start_prices = deepcopy(start_prices)
 
         self.dt = dt
         self.start_time = datetime.now(timezone.utc)
@@ -171,8 +215,7 @@ class GBMSimulator(ISimulator):
             logger.warning(f"{len(invalid)} tickers missing GBM config: {invalid}")
 
         self.stats = strict_stats
-        self.start_prices = start_prices
-        self.current_prices = start_prices.copy()
+        self.current_prices = deepcopy(self.start_prices)
         self.step_idx = 0
 
     def next_bars(self) -> list[TickerData]:
@@ -189,15 +232,15 @@ class GBMSimulator(ISimulator):
             last_price = self.current_prices[ticker]
 
             # GBM closed-form update
-            z = np.random.normal()
+            z = self._rng.normal()
             growth = (mu - 0.5 * sigma ** 2) * self.dt + sigma * np.sqrt(self.dt) * z
             new_price = last_price * np.exp(growth)
             self.current_prices[ticker] = new_price
 
             # Simple OHLC
             open_p = last_price
-            high_p = max(open_p, new_price) + np.random.uniform(0, 0.01) * new_price
-            low_p = min(open_p, new_price) - np.random.uniform(0, 0.01) * new_price
+            high_p = max(open_p, new_price) + self._rng.uniform(0, 0.01) * new_price
+            low_p = min(open_p, new_price) - self._rng.uniform(0, 0.01) * new_price
 
             bars.append(
                 TickerData(

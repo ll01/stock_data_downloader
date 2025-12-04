@@ -1,0 +1,19 @@
+{
+  "name": "@trading-bot/stock-downloader",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "uv pip install -e .",
+    "test": "uv run pytest tests/",
+    "lint": "uv run ruff check .",
+    "build": "uv pip install -e .",
+    "test": "uv run pytest tests/",
+    "lint": "uv run ruff check .",
+    "test": "uv run pytest tests/",
+    "lint": "uv run ruff check .",
+    "lint": "uv run ruff check .",
+    "clean": "rm -rf __pycache__ *.pyc"
+  },
+  "dependencies": {
+    "@trading-bot/trading-core": "workspace:*"
+  }
+}

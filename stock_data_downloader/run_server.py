@@ -55,7 +55,16 @@ def generate_basic_start_prices(
     starting_price: float, tickers_or_stats: Dict[str, Any]
 ) -> Dict[str, float]:
     """Generates basic starting prices for each ticker."""
-    return {ticker: starting_price for ticker in tickers_or_stats.keys()}
+    # If the tickers_or_stats contains TickerConfig objects, use their start_price if available
+    start_prices = {}
+    for ticker, config in tickers_or_stats.items():
+        # If it's a TickerConfig with start_price, use that
+        if isinstance(config, TickerConfig) and config.start_price is not None:
+            start_prices[ticker] = config.start_price
+        else:
+            start_prices[ticker] = starting_price
+
+    return start_prices
 
 
 async def main():

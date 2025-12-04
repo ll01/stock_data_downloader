@@ -21,6 +21,7 @@ dependencies = [
     "pytest-asyncio",
     "hyperliquid-python-sdk (>=0.14.0,<0.15.0)",
     "pyyaml",
+    "pydantic",
 ]
 
 [project.optional-dependencies]
@@ -37,3 +38,6 @@ pythonpath = "."
 
 [pytest]
 timeout = 300
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

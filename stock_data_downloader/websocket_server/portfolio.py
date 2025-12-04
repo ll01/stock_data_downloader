@@ -22,11 +22,12 @@ class Portfolio:
         self.short_positions = {}
         self.trade_history = []
     
-    def buy(self, ticker: str, quantity: float, price: float) -> bool:
+    def buy(self, ticker: str, quantity: float, price: float, fee: float = 0.0) -> bool:
         cost = quantity * price
+        total_cost = cost + fee  # Include fees in total cost
         success = False
 
-        if self.cash >= cost:
+        if self.cash >= total_cost:
             if (
                 ticker in self.short_positions
                 and self.short_positions[ticker][0] >= quantity
@@ -35,7 +36,7 @@ class Portfolio:
                 success = True
                 entry_price = self.short_positions[ticker][1]
                 profit = (entry_price - price) * quantity
-                self.cash += profit
+                self.cash += profit - fee  # Deduct fee from profit
                 new_qty = self.short_positions[ticker][0] - quantity
                 if new_qty == 0:
                     del self.short_positions[ticker]
@@ -45,25 +46,29 @@ class Portfolio:
             else:
                 # Open Long Position
                 success = True
-                self.cash -= cost
+                self.cash -= total_cost  # Deduct total cost including fees
                 if ticker in self.positions:
                     old_qty, old_price = self.positions[ticker]
                     new_qty = old_qty + quantity
-                    new_avg_price = (old_qty * old_price + quantity * price) / new_qty
+                    # Calculate new average price including fees
+                    new_avg_price = (old_qty * old_price + quantity * price + fee) / new_qty
                     self.positions[ticker] = (new_qty, new_avg_price)
                 else:
-                    self.positions[ticker] = (quantity, price)
+                    # Include fees in the average price calculation
+                    avg_price_with_fees = (quantity * price + fee) / quantity
+                    self.positions[ticker] = (quantity, avg_price_with_fees)
                 self.trade_history.append(("BUY", ticker, quantity, price, self.cash))
         else:
             logger.warning("Not enough cash to execute buy order")
         return success
 
-    def sell(self, ticker: str, quantity: float, price: float) -> bool:
+    def sell(self, ticker: str, quantity: float, price: float, fee: float = 0.0) -> bool:
         success = False
         if ticker in self.positions and self.positions[ticker][0] >= quantity:
             # Sell Long Position
             success = True
-            self.cash += quantity * price
+            proceeds = quantity * price
+            self.cash += proceeds - fee  # Deduct fees from proceeds
             new_qty = self.positions[ticker][0] - quantity
             if new_qty == 0:
                 del self.positions[ticker]
@@ -72,26 +77,36 @@ class Portfolio:
             self.trade_history.append(("SELL", ticker, quantity, price, self.cash))
         else:
             # Open/Increase Short Position
-            if  ticker in self.positions:
+            # First check if we have any long position to sell
+            if ticker in self.positions:
                 current_position = self.positions[ticker][0]
                 diff = quantity - current_position
                 if diff > 0:
-                    success = self.sell(ticker, current_position, price)
-                quantity = diff
-                if quantity <= 0:
-                    return success
-        
-
+                    # First sell existing long position
+                    success = self.sell(ticker, current_position, price, fee * (current_position / quantity) if quantity > 0 else 0)
+                    # Then open new short position for remaining quantity
+                    quantity = diff
+                    if quantity <= 0:
+                        return success
+                    # Adjust fee for remaining short position
+                    fee = fee * (quantity / (quantity + current_position)) if (quantity + current_position) > 0 else fee
+                else:
+                    # Just sell part of existing long position
+                    return self.sell(ticker, quantity, price, fee)
 
             success = True
-            self.cash += quantity * price  # Receive cash from short sale
+            proceeds = quantity * price
+            self.cash += proceeds - fee  # Deduct fees from proceeds
             if ticker in self.short_positions:
                 old_qty, old_price = self.short_positions[ticker]
                 new_qty = old_qty + quantity
-                new_avg_price = (old_qty * old_price + quantity * price) / new_qty
+                # Calculate new average price including fees
+                new_avg_price = (old_qty * old_price + quantity * price + fee) / new_qty
                 self.short_positions[ticker] = (new_qty, new_avg_price)
             else:
-                self.short_positions[ticker] = (quantity, price)
+                # Include fees in the average price calculation
+                avg_price_with_fees = (quantity * price + fee) / quantity
+                self.short_positions[ticker] = (quantity, avg_price_with_fees)
             self.trade_history.append(("SHORT", ticker, quantity, price, self.cash))
         return success
 
@@ -139,8 +154,8 @@ class Portfolio:
 
     def apply_order_result(self, result: OrderResult):
         if result.side == "buy":
-            self.buy(result.symbol, result.quantity, result.price)
+            self.buy(result.symbol, result.quantity, result.price, result.fee_paid)
         elif result.side == "sell":
-            self.sell(result.symbol, result.quantity, result.price)
+            self.sell(result.symbol, result.quantity, result.price, result.fee_paid)
 
         

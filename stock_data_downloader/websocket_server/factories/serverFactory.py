@@ -9,6 +9,7 @@ import websockets
 from stock_data_downloader.models import AppConfig
 from stock_data_downloader.websocket_server.ConnectionManager import ConnectionManager
 from stock_data_downloader.websocket_server.MessageHandler import MessageHandler
+from stock_data_downloader.websocket_server.SimulationManager import SimulationManager
 from stock_data_downloader.websocket_server.factories.DataSourceFactory import DataSourceFactory
 from stock_data_downloader.websocket_server.factories.ExchangeFactory import ExchangeFactory
 from stock_data_downloader.websocket_server.portfolio import Portfolio
@@ -64,11 +65,15 @@ async def create_server_from_config(config: AppConfig) -> WebSocketServer:
         data_source=data_source
     )
 
+    # Create the SimulationManager
+    simulation_manager = SimulationManager(config)
+
     # Create the WebSocket server
     server = WebSocketServer(
-        trading_system=trading_system,
+        data_source=data_source,
         connection_manager=connection_manager,
         message_handler=message_handler,
+        simulation_manager=simulation_manager,
         uri=websocket_uri,
         max_in_flight_messages=10,  # Default value
     )

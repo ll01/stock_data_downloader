@@ -114,15 +114,17 @@ class Portfolio:
         long_value = sum(
             qty * prices[tick] for tick, (qty, _) in self.positions.items()
         )
-        short_value = sum(
-            qty * (entry_price - prices[tick])
+        # Calculate liability for short positions
+        short_liability = sum(
+            qty * prices[tick]
             for tick, (qty, entry_price) in self.short_positions.items()
         )
-        return self.cash + long_value + short_value
+        # Equity = Cash + Long Value - Short Liability
+        return self.cash + long_value - short_liability
 
     def calculate_total_value(self):
         market_value_long = 0
-        market_value_short = 0
+        market_value_short_liability = 0
 
         for ticker, position in self.positions.items():
             quantity, last_price = position
@@ -137,12 +139,19 @@ class Portfolio:
 
             if quantity > 0:
                 market_value_long += quantity * last_price
-            else:
-                market_value_short += (
-                    abs(quantity) * last_price
-                )  # Value of short position
+        
+        for ticker, position in self.short_positions.items():
+            quantity, entry_price = position
+            # For shorts, we need the current price to calculate liability.
+            # But here we only have entry_price stored in the tuple if we don't have external prices.
+            # This method seems to rely on the tuple having (qty, price).
+            # In positions: (qty, avg_price).
+            # In short_positions: (qty, entry_price).
+            # If we interpret entry_price as "last known price" (which is wrong but all we have),
+            # then liability is qty * entry_price.
+            market_value_short_liability += quantity * entry_price
 
-        return self.cash + market_value_long - market_value_short
+        return self.cash + market_value_long - market_value_short_liability
 
     def calculate_total_return(self) -> float:
         final_value = self.calculate_total_value()

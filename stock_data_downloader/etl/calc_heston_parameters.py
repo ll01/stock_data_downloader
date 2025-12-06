@@ -23,6 +23,7 @@ import statistics
 
 COINGECKO_LIST_URL = "https://api.coingecko.com/api/v3/coins/list"
 COINGECKO_MARKET_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+COINGECKO_COIN_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}"
 
 # Known mappings help skip the coin list lookup for the most common tickers.
 DEFAULT_TICKER_IDS: dict[str, str] = {
@@ -45,6 +46,7 @@ DEFAULT_TICKER_IDS: dict[str, str] = {
 
 PRICE_SOURCES = ("coingecko", "livecoinwatch")
 LIVECOINWATCH_HISTORY_URL = "https://api.livecoinwatch.com/coins/single/history"
+LIVECOINWATCH_COIN_URL = "https://api.livecoinwatch.com/coins/single"
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -209,6 +211,18 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to wait between CoinGecko requests (default: 1.2).",
     )
     parser.add_argument(
+        "--max-daily-volatility",
+        type=float,
+        default=0.05,
+        help="Maximum daily volatility (standard deviation of log returns) to include. Default: 0.05 (5%%).",
+    )
+    parser.add_argument(
+        "--min-market-cap-usd",
+        type=float,
+        default=0.0,
+        help="Minimum market cap in USD to include. Default: 0 (disabled).",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Disable informational logging and only print results.",
@@ -269,6 +283,9 @@ def fetch_price_history(
     for point in raw_prices:
         if isinstance(point, (list, tuple)) and len(point) >= 2:
             prices.append(float(point[1]))
+    # Sanity check for delisted tokens with unrealistically low prices
+    if prices and max(prices) < 1e-6:
+        raise FetchError(f"Price for {coin_id} is unrealistically low ({max(prices):.6f}); token may be delisted")
     return prices
 
 
@@ -304,7 +321,38 @@ def fetch_price_history_livecoinwatch(
             continue
     if not prices:
         raise FetchError(f"LiveCoinWatch did not return any price points for {ticker}")
+    # Sanity check for delisted tokens with unrealistically low prices
+    if max(prices) < 1e-6:
+        raise FetchError(f"Price for {ticker} is unrealistically low ({max(prices):.6f}); token may be delisted")
     return prices
+
+
+def fetch_market_cap_coingecko(coin_id: str, vs_currency: str) -> float:
+    target = COINGECKO_COIN_URL.format(coin_id=coin_id)
+    params = {"localization": "false", "tickers": "false", "market_data": "true",
+              "community_data": "false", "developer_data": "false", "sparkline": "false"}
+    payload = fetch_json(target, params)
+    if not isinstance(payload, dict):
+        raise FetchError("Unexpected response for coin data")
+    market_data = payload.get("market_data")
+    if not isinstance(market_data, dict):
+        raise FetchError("Market data missing in response")
+    market_cap = market_data.get("market_cap", {}).get(vs_currency)
+    if market_cap is None:
+        raise FetchError(f"Market cap for {vs_currency} not found")
+    return float(market_cap)
+
+
+def fetch_market_cap_livecoinwatch(ticker: str, vs_currency: str, api_key: str) -> float:
+    payload = {"currency": vs_currency.upper(), "code": ticker.upper()}
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+    response = post_json(LIVECOINWATCH_COIN_URL, payload, headers)
+    if not isinstance(response, dict):
+        raise FetchError("Unexpected response from LiveCoinWatch coin data")
+    market_cap = response.get("marketCap")
+    if market_cap is None:
+        raise FetchError("Market cap missing in response")
+    return float(market_cap)
 
 
 def compute_log_returns(prices: list[float]) -> list[float]:
@@ -443,10 +491,47 @@ def main() -> None:
         if len(prices) < 5:
             logging.warning("Not enough prices for %s (only %d points)", ticker, len(prices))
             continue
+        
+        # Skip assets with very low prices to avoid "zero price" issues in simulation
+        if prices[-1] < 0.01:
+            logging.warning("Skipping %s because price is too low (%.5f < 0.01) - token may be delisted or have incorrect data from %s", ticker, prices[-1], args.price_source)
+            continue
+
+        # Filter by market cap if threshold set
+        if args.min_market_cap_usd > 0:
+            try:
+                if args.price_source == "coingecko":
+                    market_cap = fetch_market_cap_coingecko(coin_id, args.vs_currency)
+                else:
+                    market_cap = fetch_market_cap_livecoinwatch(ticker, args.vs_currency, args.livecoinwatch_api_key)
+                if market_cap < args.min_market_cap_usd:
+                    logging.warning(
+                        "Skipping %s because market cap %.0f USD is below threshold %.0f USD",
+                        ticker,
+                        market_cap,
+                        args.min_market_cap_usd,
+                    )
+                    continue
+            except FetchError as exc:
+                logging.warning("Failed to fetch market cap for %s: %s. Skipping.", ticker, exc)
+                continue
+            # Small delay to respect rate limits
+            time.sleep(args.sleep)
+
         returns = compute_log_returns(prices)
         params = estimate_heston_parameters(returns, args.interval_days)
         mean_return = statistics.mean(returns) if returns else 0.0
         volatility = math.sqrt(statistics.pvariance(returns)) if returns else 0.0
+        # Compute daily volatility (scale by interval length)
+        daily_volatility = volatility / math.sqrt(args.interval_days) if args.interval_days > 0 else volatility
+        if args.max_daily_volatility > 0 and daily_volatility > args.max_daily_volatility:
+            logging.warning(
+                "Skipping %s because daily volatility %.5f exceeds threshold %.5f",
+                ticker,
+                daily_volatility,
+                args.max_daily_volatility,
+            )
+            continue
         logging.info(
             "%s: kappa=%.3f theta=%.5f xi=%.3f rho=%.3f (mean=%.5f vol=%.5f)",
             ticker,

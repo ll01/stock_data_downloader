@@ -246,6 +246,13 @@ class ConfigFactory:
                 if start_price_raw:
                     try:
                         start_price = float(start_price_raw)
+                        # Enforce minimum start price to avoid "zero price" issues and massive quantities
+                        if start_price < 1.0:
+                            logging.warning(
+                                "Start price %s for %s is too low (< 1.0). Defaulting to 100.0.",
+                                start_price, ticker_key
+                            )
+                            start_price = 100.0
                     except ValueError:
                         logging.warning(
                             "Invalid start_price %s for %s in %s",

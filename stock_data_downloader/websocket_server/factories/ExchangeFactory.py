@@ -21,6 +21,8 @@ class ExchangeFactory:
                     maker_fee_bps=getattr(ex_cfg, "maker_fee_bps", 0.0),
                     taker_fee_bps=getattr(ex_cfg, "taker_fee_bps", 5.0),
                     slippage_bps=getattr(ex_cfg, "slippage_bps", 0.0),
+                    slippage_model=getattr(ex_cfg, "slippage_model", "fixed"),
+                    slippage_variability_bps=getattr(ex_cfg, "slippage_variability_bps", 0.0),
                 )
             case "hyperliquid":
                 return HyperliquidExchange(ex_cfg)

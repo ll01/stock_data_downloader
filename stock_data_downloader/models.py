@@ -101,6 +101,8 @@ class TestExchangeConfig(BaseModel):
     maker_fee_bps: float = 0.0
     taker_fee_bps: float = 5.0
     slippage_bps: float = 0.0
+    slippage_model: Literal["fixed", "normal"] = "fixed"
+    slippage_variability_bps: float = 0.0
 
 class HyperliquidExchangeConfig(BaseModel):
     type: Literal["hyperliquid"]

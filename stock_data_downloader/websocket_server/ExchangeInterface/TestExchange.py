@@ -1,7 +1,8 @@
 import asyncio
-from dataclasses import dataclass
 import logging
 import uuid
+import random
+import math
 from typing import Awaitable, Callable, Dict, Any, List
 
 from stock_data_downloader.websocket_server.ExchangeInterface.ExchangeInterface import (
@@ -20,7 +21,7 @@ class TestExchange(ExchangeInterface):
     order_cls = Order
     """Test exchange implementation that uses a Portfolio for testing without real market connection"""
 
-    def __init__(self, portfolio: Portfolio, maker_fee_bps: float = 0.0, taker_fee_bps: float = 5.0, slippage_bps: float = 0.0):
+    def __init__(self, portfolio: Portfolio, maker_fee_bps: float = 0.0, taker_fee_bps: float = 5.0, slippage_bps: float = 0.0, slippage_model: str = "fixed", slippage_variability_bps: float = 0.0):
         """
         Initialize the test exchange
 
@@ -38,6 +39,8 @@ class TestExchange(ExchangeInterface):
         self.maker_fee_bps = maker_fee_bps
         self.taker_fee_bps = taker_fee_bps
         self.slippage_bps = slippage_bps
+        self.slippage_model = slippage_model
+        self.slippage_variability_bps = slippage_variability_bps
         try:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:  # No running event loop
@@ -96,10 +99,28 @@ class TestExchange(ExchangeInterface):
                     self.active_orders[order_id] = order_info
 
                 adjusted_price = order.price
+                
+                # Calculate slippage factor based on model
+                slippage_factor = 0.0
+                
+                if self.slippage_model == "normal":
+                    # Sample from normal distribution
+                    # Mean = slippage_bps, StdDev = slippage_variability_bps
+                    # We divide by 10000.0 to convert basis points to decimal factor
+                    mean_slippage = self.slippage_bps
+                    std_dev = self.slippage_variability_bps
+                    sampled_bps = random.normalvariate(mean_slippage, std_dev)
+                    # Slippage is usually against you: buy higher, sell lower
+                    slippage_factor = sampled_bps / 10000.0
+                else: 
+                    # Fixed slippage model (default)
+                    slippage_factor = self.slippage_bps / 10000.0
+                
                 if side == "buy":
-                    adjusted_price = order.price * (1 + self.slippage_bps / 10000.0)
+                    adjusted_price = order.price * (1 + slippage_factor)
                 elif side == "sell":
-                    adjusted_price = order.price * (1 - self.slippage_bps / 10000.0)
+                    # For selling, slippage means we sell for less
+                    adjusted_price = order.price * (1 - slippage_factor)
 
                 # Apply fees
                 slippage_adjusted_price = adjusted_price

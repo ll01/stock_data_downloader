@@ -8,7 +8,7 @@ from stock_data_downloader.websocket_server.ExchangeInterface.Order import Order
 @pytest.mark.asyncio
 async def test_fixed_slippage():
     """Verify that fixed slippage is deterministic"""
-    portfolio = Portfolio(initial_cash=10000)
+    portfolio = Portfolio(initial_cash=10000, margin_requirement=1.5)
     exchange = TestExchange(
         portfolio=portfolio,
         slippage_bps=50.0, # 0.5%
@@ -38,7 +38,7 @@ async def test_fixed_slippage():
 @pytest.mark.asyncio
 async def test_randomized_slippage():
     """Verify that randomized slippage produces variable results"""
-    portfolio = Portfolio(initial_cash=1000000)
+    portfolio = Portfolio(initial_cash=1000000, margin_requirement=1.5)
     exchange = TestExchange(
         portfolio=portfolio,
         slippage_bps=50.0, # Mean 0.5%

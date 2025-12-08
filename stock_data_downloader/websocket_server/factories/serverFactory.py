@@ -38,7 +38,7 @@ async def create_server_from_config(config: AppConfig) -> WebSocketServer:
         Configured WebSocketServer instance
     """
     # Create portfolio with initial cash from config
-    portfolio = Portfolio(initial_cash=config.initial_cash)
+    portfolio = Portfolio(initial_cash=config.initial_cash, margin_requirement=1.5)
     
     # For now, assume simulation mode (test exchange) since we don't have exchange config in AppConfig
     # This could be extended in the future to support different exchange types

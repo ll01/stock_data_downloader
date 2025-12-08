@@ -7,7 +7,7 @@ from stock_data_downloader.websocket_server.ExchangeInterface.OrderResult import
 
 def test_portfolio_fees():
     # Create a portfolio with initial cash
-    portfolio = Portfolio(initial_cash=10000)
+    portfolio = Portfolio(initial_cash=10000, margin_requirement=1.5)
     print(f"Initial cash: {portfolio.cash}")
     
     # Test buying with fees

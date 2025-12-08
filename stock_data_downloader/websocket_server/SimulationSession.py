@@ -8,6 +8,6 @@ class SimulationSession:
     """
     def __init__(self, client_id: str, app_config: AppConfig):
         self.client_id = client_id
-        self.portfolio = Portfolio(initial_cash=app_config.initial_cash)
+        self.portfolio = Portfolio(initial_cash=app_config.initial_cash, margin_requirement=1.5)
         # Use the factory to create a new exchange instance for this session
         self.exchange = ExchangeFactory.create_exchange(app_config.exchange, self.portfolio)

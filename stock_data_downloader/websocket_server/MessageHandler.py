@@ -180,7 +180,7 @@ class MessageHandler:
             if session.portfolio:
                 final_value = session.portfolio.cash
                 total_return = session.portfolio.calculate_total_return()
-                final_portfolio_state = vars(session.portfolio)
+                final_portfolio_state = session.portfolio.to_dict()
                 payload = {
                     "final_value": final_value,
                     "total_return": total_return,
@@ -303,7 +303,7 @@ class MessageHandler:
                 if result.success:
                     session.portfolio.apply_order_result(result)
                     result_dict = vars(result)
-                    result_dict["portfolio"] = vars(session.portfolio)
+                    result_dict["portfolio"] = session.portfolio.to_dict()
                     payload.append(result_dict)
             return HandleResult(result_type="order_confirmation", payload=payload)
 
